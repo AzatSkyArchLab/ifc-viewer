@@ -19,7 +19,15 @@ returns, so adding a check on the backend surfaces it here with no frontend chan
 - **Left, bottom:** full attributes + property/quantity sets of the selection.
 - **Right:** 3D model — orbit, click to pick, Shift+click to multi-select.
 - **Toolbar:** isolate / hide selection / show all, Open IFC (or drag-and-drop
-  one or more `.ifc` files).
+  one or more `.ifc` files), Open TRM.
+
+### TRM drawings
+
+«Открыть TRM» (or drag-and-drop a vitro TRM container) opens a full-screen
+overlay listing the container's documents; selecting one previews it (PDF
+drawings render via `pdf.js`, images inline). When a loaded model matches a TRM
+drawing by filename, a «Вид модели (TRM)» button opens it directly. Parsing is
+client-side (`fflate` + `pdfjs-dist`) and independent of the backend.
 
 ## Backend contract
 

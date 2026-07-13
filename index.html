@@ -18,6 +18,10 @@
           <button id="btn-isolate" class="btn" type="button">Изолировать</button>
           <button id="btn-hide" class="btn" type="button">Скрыть</button>
           <button id="btn-showall" class="btn" type="button">Показать всё</button>
+          <label class="btn">
+            Открыть TRM
+            <input id="trm-input" type="file" hidden />
+          </label>
           <label class="btn btn-primary">
             Открыть IFC
             <input id="file-input" type="file" accept=".ifc" multiple hidden />
@@ -38,6 +42,9 @@
           </details>
           <div class="pane pane-list">
             <select id="storey" class="storey" title="Этаж"></select>
+            <button id="btn-view" class="view-btn" type="button" hidden>
+              📄 Вид модели (TRM)
+            </button>
             <input
               id="filter"
               class="filter"
@@ -53,6 +60,26 @@
 
         <section id="viewer" class="viewer"></section>
       </main>
+
+      <div id="trm-overlay" class="trm-overlay" hidden>
+        <header class="trm-topbar">
+          <div class="trm-head">
+            <span class="trm-badge">TRM</span>
+            <span id="trm-title" class="trm-title"></span>
+          </div>
+          <div class="trm-actions">
+            <button id="trm-analyze" class="btn" type="button" hidden>
+              📊 Разбор чертежа
+            </button>
+            <button id="trm-close" class="btn" type="button">← К модели</button>
+          </div>
+        </header>
+        <div class="trm-body">
+          <aside id="trm-list" class="trm-list"></aside>
+          <section id="trm-content" class="trm-content"></section>
+          <aside id="trm-analysis" class="trm-analysis" hidden></aside>
+        </div>
+      </div>
     </div>
 
     <script type="module" src="/src/main.ts"></script>

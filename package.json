@@ -17,6 +17,8 @@
   },
   "license": "MIT",
   "dependencies": {
+    "fflate": "^0.8.3",
+    "pdfjs-dist": "^4.10.38",
     "three": "^0.184.0",
     "web-ifc": "^0.0.77"
   },

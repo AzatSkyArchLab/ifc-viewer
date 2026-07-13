@@ -5,6 +5,7 @@ import type { IfcStorey } from "./core/types.ts";
 import { Viewer } from "./viewer/viewer.ts";
 import { ElementList } from "./ui/element-list.ts";
 import { PropertiesPanel } from "./ui/properties-panel.ts";
+import { TrmView } from "./ui/trm-view.ts";
 import { ChecksPanel } from "./ui/checks-panel.ts";
 
 /**
@@ -25,6 +26,15 @@ const parser = new IfcParser();
 const viewer = new Viewer(byId("viewer"));
 const list = new ElementList(byId("element-list"));
 const props = new PropertiesPanel(byId("properties"));
+const trm = new TrmView(
+  byId("trm-overlay"),
+  byId("trm-title"),
+  byId("trm-list"),
+  byId("trm-content"),
+  byId("trm-close"),
+  byId<HTMLButtonElement>("trm-analyze"),
+  byId("trm-analysis"),
+);
 const checks = new ChecksPanel(
   byId<HTMLButtonElement>("chk-run"),
   byId("chk-result"),
@@ -32,8 +42,10 @@ const checks = new ChecksPanel(
 
 const statusEl = byId("status");
 const fileInput = byId<HTMLInputElement>("file-input");
+const trmInput = byId<HTMLInputElement>("trm-input");
 const filterInput = byId<HTMLInputElement>("filter");
 const storeySelect = byId<HTMLSelectElement>("storey");
+const btnView = byId<HTMLButtonElement>("btn-view");
 const btnIsolate = byId<HTMLButtonElement>("btn-isolate");
 const btnHide = byId<HTMLButtonElement>("btn-hide");
 const btnShowAll = byId<HTMLButtonElement>("btn-showall");
@@ -44,6 +56,8 @@ let selection: number[] = [];
 let storeys = new Map<number, IfcStorey>();
 /** Loaded models (file + web-ifc model id), re-sent to the backend for checks. */
 let loadedModels: { file: File; modelId: number }[] = [];
+/** Base names of loaded models, matched to a TRM drawing. */
+let loadedNames: string[] = [];
 
 /** Highlight colours per check status (violation / review / ok). */
 const STATUS_COLOR: Record<string, number> = {
@@ -148,16 +162,37 @@ function applyStorey(key: number | null): void {
   setSelection([]);
 }
 
+/** Shows the "view model" button when a loaded model has a matching TRM drawing. */
+function updateViewButton(): void {
+  btnView.hidden = !loadedNames.some((n) => trm.viewIndexFor(n) >= 0);
+}
+
+async function openTrm(file: File): Promise<void> {
+  setStatus(`Чтение TRM ${file.name}…`);
+  try {
+    trm.open(new Uint8Array(await file.arrayBuffer()));
+    updateViewButton();
+    setStatus(`TRM: ${file.name}`);
+  } catch (err) {
+    console.error(err);
+    setStatus(`Ошибка чтения TRM: ${(err as Error).message}`);
+  }
+}
+
 async function openFiles(files: File[]): Promise<void> {
   if (files.length === 0) return;
   setStatus(`Загрузка ${files.length} файл(ов)…`);
   try {
     parser.clearAll();
     loadedModels = [];
+    loadedNames = [];
     for (const file of files) {
       const data = new Uint8Array(await file.arrayBuffer());
       const modelId = await parser.add(data, file.name);
       loadedModels.push({ file, modelId });
+      loadedNames.push(
+        file.name.replace(/\.ifc$/i, "").replace(/\s*\(\d+\)\s*$/, "").trim(),
+      );
     }
 
     const elements = parser.getElements();
@@ -170,6 +205,7 @@ async function openFiles(files: File[]): Promise<void> {
 
     setSelection([]);
     props.clear();
+    updateViewButton();
     const label = files.length === 1 ? files[0].name : `моделей: ${files.length}`;
     setStatus(`${label} · элементов: ${elements.length}`);
   } catch (err) {
@@ -197,7 +233,13 @@ fileInput.addEventListener("change", () => {
   fileInput.value = ""; // allow re-opening the same file
 });
 
-// Drag & drop: one or more .ifc files → merged models.
+trmInput.addEventListener("change", () => {
+  const file = trmInput.files?.[0];
+  if (file) void openTrm(file);
+  trmInput.value = "";
+});
+
+// Drag & drop: several .ifc → merged models; a single other file → TRM.
 const appEl = byId("app");
 appEl.addEventListener("dragover", (e) => {
   e.preventDefault();
@@ -212,6 +254,7 @@ appEl.addEventListener("drop", (e) => {
   const files = [...(e.dataTransfer?.files ?? [])];
   const ifc = files.filter((f) => f.name.toLowerCase().endsWith(".ifc"));
   if (ifc.length) void openFiles(ifc);
+  else if (files[0]) void openTrm(files[0]);
 });
 
 filterInput.addEventListener("input", () => list.setFilter(filterInput.value));
@@ -219,6 +262,13 @@ filterInput.addEventListener("input", () => list.setFilter(filterInput.value));
 storeySelect.addEventListener("change", () => {
   const v = storeySelect.value;
   applyStorey(v ? Number(v) : null);
+});
+
+btnView.addEventListener("click", () => {
+  const name = loadedNames.find((n) => trm.viewIndexFor(n) >= 0);
+  if (!name || !trm.focusView(name)) {
+    setStatus("Для загруженных моделей нет вида в TRM");
+  }
 });
 
 btnIsolate.addEventListener("click", () => {
