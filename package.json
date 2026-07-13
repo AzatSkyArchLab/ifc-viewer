@@ -1,0 +1,26 @@
+{
+  "name": "ifc-viewer",
+  "version": "0.1.0",
+  "description": "Standalone client-side IFC 3D viewer with IDS checks driven by a backend API",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "postinstall": "node scripts/copy-wasm.mjs",
+    "predev": "node scripts/copy-wasm.mjs",
+    "prebuild": "node scripts/copy-wasm.mjs",
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "three": "^0.184.0",
+    "web-ifc": "^0.0.77"
+  },
+  "devDependencies": {
+    "@types/three": "^0.184.1",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.16"
+  }
+}

@@ -1,0 +1,22 @@
+# CI for ifc-viewer: type-check and build the static bundle.
+stages:
+  - build
+
+default:
+  image: node:22-alpine
+
+build:
+  stage: build
+  cache:
+    key:
+      files:
+        - package-lock.json
+    paths:
+      - node_modules/
+  script:
+    - npm ci
+    - npm run build
+  artifacts:
+    paths:
+      - dist/
+    expire_in: 1 week

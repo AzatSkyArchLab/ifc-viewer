@@ -1,0 +1,13 @@
+node_modules/
+dist/
+
+# local environment overrides (keep .env.example committed)
+.env
+.env.local
+.env.*.local
+
+# copied from node_modules by scripts/copy-wasm.mjs
+public/web-ifc.wasm
+
+# runtime backend config — copy config.example.json → config.json on deploy
+public/config.json

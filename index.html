@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>IFC Viewer</title>
+  </head>
+  <body>
+    <div id="app">
+      <header class="topbar">
+        <div class="brand">
+          <span class="logo">▣</span>
+          <span class="brand-name">IFC Viewer</span>
+          <span class="brand-sub">просмотр модели и проверки</span>
+        </div>
+        <div class="topbar-actions">
+          <span id="status" class="status"></span>
+          <button id="btn-isolate" class="btn" type="button">Изолировать</button>
+          <button id="btn-hide" class="btn" type="button">Скрыть</button>
+          <button id="btn-showall" class="btn" type="button">Показать всё</button>
+          <label class="btn btn-primary">
+            Открыть IFC
+            <input id="file-input" type="file" accept=".ifc" multiple hidden />
+          </label>
+        </div>
+      </header>
+
+      <main class="layout">
+        <aside class="sidebar">
+          <details class="checks" open>
+            <summary>Проверки IDS</summary>
+            <div class="checks-body">
+              <button id="chk-run" class="chk-run" type="button" disabled>
+                ▶ Проверить модель
+              </button>
+              <div id="chk-result" class="chk-result"></div>
+            </div>
+          </details>
+          <div class="pane pane-list">
+            <select id="storey" class="storey" title="Этаж"></select>
+            <input
+              id="filter"
+              class="filter"
+              type="search"
+              placeholder="Фильтр: тип, имя, #id, GUID"
+            />
+            <div id="element-list" class="element-list"></div>
+          </div>
+          <div class="pane pane-props">
+            <div id="properties" class="properties"></div>
+          </div>
+        </aside>
+
+        <section id="viewer" class="viewer"></section>
+      </main>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
