@@ -80,13 +80,18 @@ export class ChecksPanel {
     const checks = new Map<string, CheckAgg>();
     const multi = models.length > 1;
     try {
-      for (const { file, modelId } of models) {
-        const results = await runIfcIdsChecks(file);
-        const fileChecks = results[0]?.checks ?? [];
-        for (const check of fileChecks) {
-          this.mergeCheck(checks, order, check, file, modelId, multi);
+      // One request with the whole set so cross-file checks (IFC-21/22) see
+      // every file; the response is per-file, in upload order.
+      const results = await runIfcIdsChecks(models.map((m) => m.file));
+      results.forEach((fileResult, i) => {
+        const model = models[i];
+        if (!model) return;
+        for (const check of fileResult.checks ?? []) {
+          // Batch-scoped checks are attached to every file — merge them once.
+          if (check.scope === "batch" && i > 0) continue;
+          this.mergeCheck(checks, order, check, model.file, model.modelId, multi);
         }
-      }
+      });
     } catch (err) {
       this.resultEl.innerHTML =
         `<div class="chk-note err">Ошибка запроса: ${escapeHtml((err as Error).message)}` +
@@ -128,9 +133,14 @@ export class ChecksPanel {
     const prefix = multi ? `${file.name.replace(/\.ifc$/i, "")}: ` : "";
     for (const el of check.elements) {
       const list = agg.byStatus.get(el.status) ?? [];
+      // Model-level findings (units, coordination facts) carry express_id 0 —
+      // show just their name, without a meaningless "#0" / filename prefix.
+      const label = el.express_id
+        ? `${prefix}${el.name ?? el.ifc_class} #${el.express_id}`
+        : el.name ?? el.ifc_class;
       list.push({
         key: makeKey(modelId, el.express_id),
-        label: `${prefix}${el.name ?? el.ifc_class} #${el.express_id}`,
+        label,
         reason: el.reason,
         pickable: el.pickable !== false,
       });

@@ -30,7 +30,7 @@
       </header>
 
       <main class="layout">
-        <aside class="sidebar">
+        <aside id="sidebar" class="sidebar">
           <details class="checks" open>
             <summary>Проверки IDS</summary>
             <div class="checks-body">
@@ -40,7 +40,7 @@
               <div id="chk-result" class="chk-result"></div>
             </div>
           </details>
-          <div class="pane pane-list">
+          <div id="pane-list" class="pane pane-list">
             <select id="storey" class="storey" title="Этаж"></select>
             <button id="btn-view" class="view-btn" type="button" hidden>
               📄 Вид модели (TRM)
@@ -53,6 +53,7 @@
             />
             <div id="element-list" class="element-list"></div>
           </div>
+          <div id="pane-resizer" class="pane-resizer" title="Потяните, чтобы изменить размер"></div>
           <div class="pane pane-props">
             <div id="properties" class="properties"></div>
           </div>

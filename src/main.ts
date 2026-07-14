@@ -7,6 +7,7 @@ import { ElementList } from "./ui/element-list.ts";
 import { PropertiesPanel } from "./ui/properties-panel.ts";
 import { TrmView } from "./ui/trm-view.ts";
 import { ChecksPanel } from "./ui/checks-panel.ts";
+import { makeVerticalResizer } from "./ui/pane-resizer.ts";
 
 /**
  * Thin glue for the standalone IFC viewer: wires the parser, the three.js scene
@@ -283,6 +284,8 @@ btnShowAll.addEventListener("click", () => {
   viewer.showAll();
   refreshHidden();
 });
+
+makeVerticalResizer(byId("pane-resizer"), byId("pane-list"), byId("sidebar"));
 
 updateButtons();
 

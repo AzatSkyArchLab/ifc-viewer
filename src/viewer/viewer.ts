@@ -49,11 +49,22 @@ export class Viewer {
   /** Shared line material for IfcSpace top-face outlines. */
   private spaceEdgeMaterial = new THREE.LineBasicMaterial({ color: SPACE_EDGE_COLOR });
 
+  /** On-demand rendering: only draw a frame when the scene actually changed. */
+  private needsRender = true;
+  /** Pixel ratio at rest (crisp) vs. while the camera moves (fast); see animate. */
+  private readonly highRatio: number;
+  private readonly lowRatio = 1;
+  private ratioIsLow = false;
+
   private onSelect: SelectHandler = () => {};
 
   constructor(private container: HTMLElement) {
-    this.renderer = new THREE.WebGLRenderer({ antialias: true });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer = new THREE.WebGLRenderer({
+      antialias: true,
+      powerPreference: "high-performance",
+    });
+    this.highRatio = Math.min(window.devicePixelRatio, 2);
+    this.renderer.setPixelRatio(this.highRatio);
     this.renderer.setSize(container.clientWidth, container.clientHeight);
     container.appendChild(this.renderer.domElement);
 
@@ -71,6 +82,7 @@ export class Viewer {
 
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
+    this.controls.addEventListener("change", this.requestRender);
 
     this.highlightMaterial = new THREE.MeshLambertMaterial({
       color: HIGHLIGHT_COLOR,
@@ -239,6 +251,7 @@ export class Viewer {
         this.inScope(id) && !this.hidden.has(id) && !this.typeHidden.has(id);
       for (const m of meshes) m.visible = visible;
     }
+    this.requestRender();
   }
 
   getHiddenIds(): number[] {
@@ -316,6 +329,7 @@ export class Viewer {
         mesh.material = this.highlightMaterial;
       }
     }
+    this.requestRender();
   }
 
   /** Frames the camera on the currently visible meshes (respects scope). */
@@ -346,6 +360,7 @@ export class Viewer {
     this.camera.far = maxDim * 100;
     this.camera.updateProjectionMatrix();
     this.controls.update();
+    this.requestRender();
   }
 
   private handleResize = (): void => {
@@ -355,13 +370,36 @@ export class Viewer {
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h);
+    this.requestRender();
+  };
+
+  /** Flags that a frame is needed; the render loop is otherwise idle. */
+  private requestRender = (): void => {
+    this.needsRender = true;
   };
 
   private animate = (): void => {
     requestAnimationFrame(this.animate);
+    if (!this.needsRender) return;
+    this.needsRender = false;
+    // update() applies damping and re-flags needsRender (via "change") while the
+    // camera is still moving, so the loop keeps drawing until it settles.
     this.controls.update();
+    this.applyRenderQuality(this.needsRender);
     this.renderer.render(this.scene, this.camera);
   };
+
+  /** Low pixel ratio while moving (fast), full ratio once settled (crisp). */
+  private applyRenderQuality(moving: boolean): void {
+    if (moving === this.ratioIsLow) return; // switch only on transitions
+    this.ratioIsLow = moving;
+    this.renderer.setPixelRatio(moving ? this.lowRatio : this.highRatio);
+    this.renderer.setSize(
+      this.container.clientWidth,
+      this.container.clientHeight,
+      false,
+    );
+  }
 }
 
 /**

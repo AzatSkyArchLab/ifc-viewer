@@ -38,6 +38,7 @@ body {
   display: flex;
   flex-direction: column;
   height: 100vh;
+  overflow: hidden; /* the page never scrolls — only inner panels do; model stays put */
 }
 
 #app.dragover {
@@ -156,11 +157,25 @@ body {
 
 .pane-list {
   flex: 1 1 55%;
-  border-bottom: 1px solid var(--border);
 }
 
 .pane-props {
   flex: 1 1 45%;
+}
+
+/* Draggable divider between the element list and the properties pane. */
+.pane-resizer {
+  flex: none;
+  height: 7px;
+  cursor: row-resize;
+  background: var(--border);
+  border-top: 1px solid var(--bg-panel);
+  border-bottom: 1px solid var(--bg-panel);
+  transition: background 0.12s;
+}
+
+.pane-resizer:hover {
+  background: var(--accent);
 }
 
 .viewer {
@@ -239,6 +254,8 @@ body {
 
 .chk-result {
   margin-top: 8px;
+  max-height: 42vh; /* keep the checks panel from squeezing out the list/props */
+  overflow-y: auto;
 }
 
 .chk-note {
