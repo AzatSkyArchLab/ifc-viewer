@@ -15,6 +15,10 @@
         </div>
         <div class="topbar-actions">
           <span id="status" class="status"></span>
+          <button id="btn-undo" class="btn btn-icon" type="button"
+                  title="Отменить (Ctrl/Cmd+Z)" aria-label="Отменить" disabled>↶</button>
+          <button id="btn-redo" class="btn btn-icon" type="button"
+                  title="Повторить (Ctrl/Cmd+Shift+Z)" aria-label="Повторить" disabled>↷</button>
           <button id="btn-isolate" class="btn" type="button">Изолировать</button>
           <button id="btn-hide" class="btn" type="button">Скрыть</button>
           <button id="btn-showall" class="btn" type="button">Показать всё</button>
@@ -46,7 +50,7 @@
           </details>
           <div id="checks-resizer" class="pane-resizer" title="Потяните, чтобы изменить размер"></div>
           <div id="pane-list" class="pane pane-list">
-            <select id="storey" class="storey" title="Этаж"></select>
+            <div id="model-tree" class="model-tree"></div>
             <button id="btn-view" class="view-btn" type="button" hidden>
               📄 Вид модели (TRM)
             </button>

@@ -3,8 +3,8 @@ import type { IfcElement } from "../core/types.ts";
 /** additive === true — click with Shift (multi-select). The id is a scene key. */
 export type ElementSelectHandler = (key: number, additive: boolean) => void;
 
-/** Called when a type "layer" is toggled: its keys and the new visibility. */
-export type TypeVisibilityHandler = (keys: number[], visible: boolean) => void;
+/** Called when a type "layer" is toggled: the (lower-case) type and its new visibility. */
+export type TypeVisibilityHandler = (typeLower: string, visible: boolean) => void;
 
 /** IFC types hidden on load (lower-case type names). */
 const DEFAULT_HIDDEN = new Set(["ifcspace"]);
@@ -45,7 +45,7 @@ export class ElementList {
     const present = new Set(elements.map((e) => e.typeName.toLowerCase()));
     this.hiddenTypes = new Set([...DEFAULT_HIDDEN].filter((t) => present.has(t)));
     this.render();
-    for (const t of this.hiddenTypes) this.onTypeVisibility(this.keysByType(t), false);
+    for (const t of this.hiddenTypes) this.onTypeVisibility(t, false);
   }
 
   setFilter(text: string): void {
@@ -80,18 +80,17 @@ export class ElementList {
     }
   }
 
-  /** All scene keys of a type (lower-case name), across models. */
-  private keysByType(typeLower: string): number[] {
-    return this.elements
-      .filter((e) => e.typeName.toLowerCase() === typeLower)
-      .map((e) => e.key);
+  /** Resync the hidden type "layers" from the outside (undo / redo). */
+  setHiddenTypes(types: Set<string>): void {
+    this.hiddenTypes = new Set(types);
+    this.render();
   }
 
   private toggleType(typeLower: string): void {
     const nowVisible = this.hiddenTypes.has(typeLower);
     if (nowVisible) this.hiddenTypes.delete(typeLower);
     else this.hiddenTypes.add(typeLower);
-    this.onTypeVisibility(this.keysByType(typeLower), nowVisible);
+    this.onTypeVisibility(typeLower, nowVisible);
     this.render();
   }
 

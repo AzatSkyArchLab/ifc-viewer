@@ -131,6 +131,13 @@ body {
   background: #1d55d8;
 }
 
+/* Compact icon-only buttons (undo / redo). */
+.btn-icon {
+  padding: 6px 9px;
+  font-size: 15px;
+  line-height: 1;
+}
+
 /* ── Layout ─────────────────────────────────────────────────────────────── */
 
 .layout {
@@ -983,27 +990,130 @@ body {
 
 /* ── Element list ───────────────────────────────────────────────────────── */
 
-.storey {
+/* ── Model → floors visibility tree ─────────────────────────────────────── */
+
+.model-tree {
   margin: 8px 8px 0;
-  padding: 6px 10px;
-  border: 1px solid var(--border-strong);
-  border-radius: 6px;
-  font: inherit;
-  font-size: 12px;
-  background: var(--bg);
-  color: var(--text);
   flex: none;
+  max-height: 32vh;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  font-size: 12px;
+}
+
+.mt-empty {
+  padding: 10px;
+  color: var(--text-faint);
+  text-align: center;
+}
+
+.mt-section {
+  padding: 7px 8px 2px;
+  color: var(--text-faint);
+  font-weight: 600;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.mt-master {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  font-weight: 600;
+  color: var(--text-soft);
+  border-bottom: 1px solid var(--border);
+}
+
+.mt-eye,
+.mt-focus {
+  flex: none;
+  border: 0;
+  background: none;
   cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  padding: 0 2px;
+  opacity: 0.7;
 }
 
-.storey:focus {
-  outline: none;
-  border-color: var(--accent);
+.mt-eye:hover,
+.mt-focus:hover {
+  opacity: 1;
 }
 
-.storey:disabled {
+.mt-focus {
+  color: var(--text-faint);
+}
+
+.mt-focus:hover,
+.mt-focus.active {
+  color: var(--accent);
+  opacity: 1;
+}
+
+.mt-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mt-floor,
+.mt-storey {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px 3px 16px;
+  border-radius: 5px;
+}
+
+.mt-floor:hover,
+.mt-storey:hover {
+  background: var(--bg-soft);
+}
+
+.mt-model > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  cursor: pointer;
+  list-style: none;
+  font-weight: 600;
+  color: var(--text-soft);
+}
+
+.mt-model > summary::-webkit-details-marker {
+  display: none;
+}
+
+.mt-model > summary::before {
+  content: "▸";
+  font-size: 9px;
+  color: var(--text-faint);
+}
+
+.mt-model[open] > summary::before {
+  content: "▾";
+}
+
+.mt-model > summary:hover {
+  background: var(--bg-soft);
+}
+
+.mt-model.mt-ghost > summary {
   opacity: 0.5;
-  cursor: default;
+}
+
+.model-tree .count {
+  color: var(--text-faint);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
 }
 
 .view-btn {
