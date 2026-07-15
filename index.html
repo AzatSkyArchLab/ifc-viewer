@@ -31,8 +31,12 @@
 
       <main class="layout">
         <aside id="sidebar" class="sidebar">
-          <details class="checks" open>
-            <summary>Проверки IFC</summary>
+          <details id="checks" class="checks" open>
+            <summary>
+              <span class="checks-title">Проверки IFC</span>
+              <button id="checks-popout" class="checks-popout" type="button"
+                      title="Вынести в отдельное окно">⤢</button>
+            </summary>
             <div class="checks-body">
               <button id="chk-run" class="chk-run" type="button" disabled>
                 Выполнить все
@@ -40,6 +44,7 @@
               <div id="chk-result" class="chk-result"></div>
             </div>
           </details>
+          <div id="checks-resizer" class="pane-resizer" title="Потяните, чтобы изменить размер"></div>
           <div id="pane-list" class="pane pane-list">
             <select id="storey" class="storey" title="Этаж"></select>
             <button id="btn-view" class="view-btn" type="button" hidden>

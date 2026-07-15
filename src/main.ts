@@ -7,7 +7,7 @@ import { ElementList } from "./ui/element-list.ts";
 import { PropertiesPanel } from "./ui/properties-panel.ts";
 import { TrmView } from "./ui/trm-view.ts";
 import { ChecksPanel } from "./ui/checks-panel.ts";
-import { makeVerticalResizer } from "./ui/pane-resizer.ts";
+import { makeDetachable, makeVerticalResizer } from "./ui/pane-resizer.ts";
 
 /**
  * Thin glue for the standalone IFC viewer: wires the parser, the three.js scene
@@ -310,6 +310,24 @@ btnShowAll.addEventListener("click", () => {
 });
 
 makeVerticalResizer(byId("pane-resizer"), byId("pane-list"), byId("sidebar"));
+
+// Checks panel: resizable by the divider below it, and pop-out into a window.
+const checksEl = byId("checks");
+const checksResizer = byId("checks-resizer");
+makeVerticalResizer(checksResizer, checksEl, byId("sidebar"));
+makeDetachable(
+  checksEl,
+  checksEl.querySelector("summary")!,
+  byId("checks-popout"),
+  checksResizer,
+);
+// A collapsed docked panel should shrink back to just its header.
+checksEl.addEventListener("toggle", () => {
+  if (!(checksEl as HTMLDetailsElement).open && !checksEl.classList.contains("floating")) {
+    checksEl.style.flex = "";
+    checksEl.style.maxHeight = "";
+  }
+});
 
 updateButtons();
 
