@@ -16,7 +16,14 @@ export function makeVerticalResizer(
 
   const onMove = (event: PointerEvent): void => {
     const delta = event.clientY - startY;
-    const max = container.clientHeight - MIN_BOTTOM;
+    // Space the top pane may occupy = from its own top edge down to the
+    // container's bottom, less a floor for whatever sits below it (its resizer
+    // and the next pane). Measuring from topPane's top accounts for anything
+    // stacked above it (e.g. the checks panel), so it can't outgrow the sidebar.
+    const available =
+      container.getBoundingClientRect().bottom -
+      topPane.getBoundingClientRect().top;
+    const max = Math.max(MIN_TOP, available - MIN_BOTTOM);
     const height = Math.max(MIN_TOP, Math.min(max, startHeight + delta));
     topPane.style.flex = `0 0 ${height}px`;
     topPane.style.maxHeight = "none"; // an explicit drag overrides any CSS cap

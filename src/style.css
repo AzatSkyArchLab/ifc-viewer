@@ -154,12 +154,14 @@ body {
   border-right: 1px solid var(--border);
   background: var(--bg-panel);
   min-height: 0;
+  overflow: hidden; /* never paint a pane's overflow outside the sidebar */
 }
 
 .pane {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  overflow: hidden; /* content scrolls inside each pane, never spills to a sibling */
 }
 
 .pane-list {
@@ -994,7 +996,8 @@ body {
 
 .model-tree {
   margin: 8px 8px 0;
-  flex: none;
+  flex: 0 1 auto; /* yield (scroll inside) when the list pane is squeezed */
+  min-height: 0;
   max-height: 32vh;
   overflow-y: auto;
   border: 1px solid var(--border);
