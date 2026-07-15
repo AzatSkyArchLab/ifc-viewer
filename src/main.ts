@@ -12,7 +12,7 @@ import { makeVerticalResizer } from "./ui/pane-resizer.ts";
 /**
  * Thin glue for the standalone IFC viewer: wires the parser, the three.js scene
  * and the panels, and owns the selection / visibility state. Elements are keyed
- * by a composite scene key so several models can share one scene. IDS checks run
+ * by a composite scene key so several models can share one scene. IFC checks run
  * against the backend configured in config.json; their set is discovered from
  * the API response (nothing about individual checks is hard-coded here).
  */
@@ -73,27 +73,48 @@ function focusElements(keys: number[], isolate: boolean, color?: number): void {
   list.setScope(null);
   viewer.setScope(null);
   selection = keys;
+  viewer.reveal(keys); // flagged elements (e.g. layer-hidden IfcSpace) must show
   viewer.setSelection(keys, color);
   list.setSelection(keys);
-  const last = keys[keys.length - 1];
-  if (last != null) void showProps(last);
-  updateButtons();
   if (isolate) {
     viewer.isolateSelected();
     refreshHidden();
   }
+  viewer.fitTo(keys); // frame the category, not the whole model
+  const last = keys[keys.length - 1];
+  if (last != null) void showProps(last);
+  updateButtons();
 }
 
 function setStatus(text: string): void {
   statusEl.textContent = text;
 }
 
-async function showProps(key: number): Promise<void> {
+async function showProps(key: number, expandAll = false): Promise<void> {
   try {
-    props.show(await parser.getElementInfo(key));
+    props.show(await parser.getElementInfo(key), expandAll);
   } catch (err) {
     console.error(err);
   }
+}
+
+/**
+ * Focus a single flagged element (from a check finding): reveal it, tint it,
+ * zoom the camera to it, and expand all its attributes on the left — WITHOUT
+ * resetting scope/isolation. `isolate` hides everything except this element.
+ */
+function focusElement(key: number, isolate: boolean, color?: number): void {
+  selection = [key];
+  viewer.reveal([key]);
+  viewer.setSelection([key], color);
+  if (isolate) {
+    viewer.isolateSelected();
+    refreshHidden();
+  }
+  viewer.fitTo([key]);
+  list.setSelection([key]);
+  void showProps(key, true);
+  updateButtons();
 }
 
 function setSelection(keys: number[]): void {
@@ -226,6 +247,9 @@ viewer.setSelectHandler((key, additive) => select(key, additive));
 checks.setModelsGetter(() => loadedModels);
 checks.setCategoryHandler((keys, status, isolate) =>
   focusElements(keys, isolate, STATUS_COLOR[status]),
+);
+checks.setElementHandler((key, status, isolate) =>
+  focusElement(key, isolate, STATUS_COLOR[status]),
 );
 
 fileInput.addEventListener("change", () => {

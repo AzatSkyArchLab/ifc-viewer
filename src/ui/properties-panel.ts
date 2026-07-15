@@ -13,7 +13,7 @@ export class PropertiesPanel {
     this.root.innerHTML = `<div class="props-empty">Выберите элемент в списке или в 3D-сцене</div>`;
   }
 
-  show(info: IfcElementInfo): void {
+  show(info: IfcElementInfo, expandAll = false): void {
     this.root.innerHTML = "";
 
     const header = document.createElement("div");
@@ -43,7 +43,7 @@ export class PropertiesPanel {
       const badge =
         pset.kind === "qto" ? "Qto" : pset.kind === "type" ? "Type" : "Pset";
       this.root.appendChild(
-        this.section(`${pset.name}`, pset.properties, false, badge),
+        this.section(`${pset.name}`, pset.properties, expandAll, badge),
       );
     }
   }

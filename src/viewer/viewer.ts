@@ -27,6 +27,8 @@ export class Viewer {
   private camera: THREE.PerspectiveCamera;
   private controls: OrbitControls;
   private modelGroup = new THREE.Group();
+  /** Ground grid — dropped to the model's underside after each load. */
+  private grid!: THREE.GridHelper;
 
   private raycaster = new THREE.Raycaster();
   private pointer = new THREE.Vector2();
@@ -114,10 +116,22 @@ export class Viewer {
   }
 
   private addGround(): void {
-    const grid = new THREE.GridHelper(100, 100, 0xc0c4cc, 0xe2e5ea);
-    (grid.material as THREE.Material).opacity = 0.6;
-    (grid.material as THREE.Material).transparent = true;
-    this.scene.add(grid);
+    this.grid = new THREE.GridHelper(100, 100, 0xc0c4cc, 0xe2e5ea);
+    (this.grid.material as THREE.Material).opacity = 0.6;
+    (this.grid.material as THREE.Material).transparent = true;
+    this.scene.add(this.grid);
+  }
+
+  /** Drops the ground grid to the model's underside so it never cuts through. */
+  private groundToModel(): void {
+    const box = new THREE.Box3();
+    const meshBox = new THREE.Box3();
+    for (const child of this.modelGroup.children) {
+      const mesh = child as THREE.Mesh;
+      if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
+      if (mesh.geometry.boundingBox) box.union(meshBox.copy(mesh.geometry.boundingBox));
+    }
+    this.grid.position.y = box.isEmpty() ? 0 : box.min.y;
   }
 
   /** Loads model geometry into the scene, clearing the previous one. */
@@ -171,6 +185,7 @@ export class Viewer {
       this.byExpressID.set(data.key, list);
     }
 
+    this.groundToModel();
     this.fitToVisible();
   }
 
@@ -232,6 +247,17 @@ export class Viewer {
    * (per-type) hiding persists — it is managed separately via setTypeHidden. */
   showAll(): void {
     this.hidden.clear();
+    this.applyVisibility();
+  }
+
+  /** Force a set of elements visible — clears manual and layer hides for just
+   *  those keys, so highlighting a flagged element (e.g. a layer-hidden IfcSpace)
+   *  actually reveals it in 3D. Other elements of the same type stay hidden. */
+  reveal(keys: number[]): void {
+    for (const k of keys) {
+      this.hidden.delete(k);
+      this.typeHidden.delete(k);
+    }
     this.applyVisibility();
   }
 
@@ -329,6 +355,34 @@ export class Viewer {
         mesh.material = this.highlightMaterial;
       }
     }
+    this.requestRender();
+  }
+
+  /** Frames the camera on a specific set of elements (by scene key). Zooms in
+   *  without touching scope/hidden, so it never resets an active isolation. */
+  fitTo(keys: number[]): void {
+    const box = new THREE.Box3();
+    const meshBox = new THREE.Box3();
+    for (const key of keys) {
+      for (const mesh of this.byExpressID.get(key) ?? []) {
+        if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
+        if (mesh.geometry.boundingBox) {
+          box.union(meshBox.copy(mesh.geometry.boundingBox));
+        }
+      }
+    }
+    if (box.isEmpty()) return;
+    const size = box.getSize(new THREE.Vector3());
+    const center = box.getCenter(new THREE.Vector3());
+    const maxDim = Math.max(size.x, size.y, size.z) || 1;
+
+    this.controls.target.copy(center);
+    const dist = maxDim * 1.8;
+    this.camera.position.set(center.x + dist, center.y + dist * 0.8, center.z + dist);
+    this.camera.near = Math.max(maxDim / 100, 0.01);
+    this.camera.far = Math.max(this.camera.far, maxDim * 200);
+    this.camera.updateProjectionMatrix();
+    this.controls.update();
     this.requestRender();
   }
 

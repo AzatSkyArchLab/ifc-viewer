@@ -268,17 +268,35 @@ body {
   color: #c0362c;
 }
 
-/* One collapsible section per check (IFC-03, IFC-25, …). */
+/* One collapsible section per check (IFC-03, IFC-25, …). Status shows only as
+   a thin coloured left edge + a coloured count — no icons. */
 .chk-check {
   border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
   border-radius: 6px;
   margin-bottom: 6px;
   overflow: hidden;
 }
 
+.chk-s-violation {
+  border-left-color: #c0362c;
+}
+
+.chk-s-review {
+  border-left-color: #b26a00;
+}
+
+.chk-s-ok {
+  border-left-color: #1a7f37;
+}
+
+.chk-s-run {
+  border-left-color: var(--border-strong);
+}
+
 .chk-check-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 6px;
   padding: 6px 8px;
   cursor: pointer;
@@ -309,18 +327,51 @@ body {
   padding: 0 6px 4px 6px;
 }
 
-.chk-verdict {
+/* Count indicator in the check header — a plain coloured number, no icon. */
+.chk-n {
   flex: none;
   font-size: 12px;
   font-weight: 600;
 }
 
-.chk-verdict.ok {
-  color: #1a7f37;
+.chk-n.bad {
+  color: #c0362c;
 }
 
-.chk-verdict.bad {
-  color: #c0362c;
+.chk-n.warn {
+  color: #b26a00;
+}
+
+.chk-n.ok,
+.chk-n.idle,
+.chk-n.run {
+  color: var(--text-soft);
+  font-weight: 400;
+  font-size: 11px;
+}
+
+/* Per-check run button ("Выполнить" / "Повторить"). */
+.chk-one {
+  flex: none;
+  padding: 2px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--text-soft);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.chk-one:hover {
+  background: var(--bg-soft);
+  color: var(--text);
+}
+
+.chk-one:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .chk-cat {
@@ -351,6 +402,7 @@ body {
 }
 
 .chk-el {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 1px;
@@ -359,6 +411,32 @@ body {
   margin-bottom: 3px;
   cursor: pointer;
   border-radius: 0 4px 4px 0;
+}
+
+/* Per-element "isolate this one" — appears on row hover to avoid clutter. */
+.chk-el-iso {
+  position: absolute;
+  top: 3px;
+  right: 4px;
+  padding: 1px 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text-soft);
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+  opacity: 0;
+  white-space: nowrap;
+}
+
+.chk-el:hover .chk-el-iso {
+  opacity: 1;
+}
+
+.chk-el-iso:hover {
+  background: var(--bg-soft);
+  color: var(--text);
 }
 
 .chk-el:hover {
@@ -419,6 +497,29 @@ body {
 
 .chk-mini:hover {
   background: var(--bg-soft);
+}
+
+.chk-report {
+  flex: none;
+  padding: 2px 7px;
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.chk-report:hover {
+  background: var(--bg-soft);
+}
+
+.chk-report:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 /* ── TRM overlay ────────────────────────────────────────────────────────── */
