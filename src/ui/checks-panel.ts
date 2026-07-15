@@ -58,6 +58,8 @@ export class ChecksPanel {
   private list: { id: string; name: string; description: string }[] = [];
   private results = new Map<string, CheckAgg>();
   private running = new Set<string>();
+  /** Check ids the user has expanded — preserved across re-renders. */
+  private openChecks = new Set<string>();
 
   constructor(
     private runAllBtn: HTMLButtonElement,
@@ -85,6 +87,7 @@ export class ChecksPanel {
     this.runAllBtn.disabled = !enabled;
     this.results.clear();
     this.running.clear();
+    this.openChecks.clear();
     if (!enabled) {
       this.list = [];
       this.resultEl.innerHTML = "";
@@ -155,7 +158,10 @@ export class ChecksPanel {
         this.mergeCheck(built, order, check, model.file, model.modelId, multi);
       }
     });
-    for (const [id, agg] of built) this.results.set(id, agg);
+    for (const [id, agg] of built) {
+      this.results.set(id, agg);
+      this.openChecks.add(id); // a freshly-run check opens to show its result
+    }
   }
 
   private flash(err: unknown): void {
@@ -253,7 +259,7 @@ export class ChecksPanel {
       : `<div class="chk-note">Проверка ещё не выполнялась.</div>`;
 
     return `
-      <details class="chk-check chk-s-${state}" ${agg ? "open" : ""}>
+      <details class="chk-check chk-s-${state}" data-check="${escapeHtml(meta.id)}" ${this.openChecks.has(meta.id) ? "open" : ""}>
         <summary class="chk-check-head">
           <span class="chk-check-id">${escapeHtml(meta.id)}</span>
           <span class="chk-check-name">${escapeHtml(meta.name)}</span>
@@ -300,6 +306,15 @@ export class ChecksPanel {
   }
 
   private bindActions(): void {
+    // Track expand/collapse so a re-render keeps each check as the user left it.
+    for (const d of this.resultEl.querySelectorAll<HTMLDetailsElement>(".chk-check")) {
+      d.addEventListener("toggle", () => {
+        const id = d.dataset.check;
+        if (!id) return;
+        if (d.open) this.openChecks.add(id);
+        else this.openChecks.delete(id);
+      });
+    }
     for (const btn of this.resultEl.querySelectorAll<HTMLButtonElement>(".chk-one")) {
       btn.addEventListener("click", (ev) => {
         ev.preventDefault();
