@@ -200,6 +200,22 @@ body {
   border-bottom: 1px solid var(--border);
 }
 
+/*
+ * Chrome wraps a <details>' post-<summary> content in a `::details-content`
+ * pseudo-element. Left at its default `display: block` it breaks the flex
+ * height chain: `.checks-body` no longer shrinks to the panel, so on a resized
+ * (or floated) panel the result grows past the background and text overlaps.
+ * Making the wrapper a flex pass-through restores the chain so `.chk-result`
+ * scrolls inside the panel instead. Ignored by engines without the pseudo.
+ */
+.checks::details-content {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
 /* Floated out into a movable / resizable window. */
 .checks.floating {
   position: fixed;
@@ -209,7 +225,7 @@ body {
   height: 420px;
   max-height: none;
   resize: both;
-  overflow: auto;
+  overflow: hidden; /* clip to the frame; inner .chk-result owns the scroll */
   z-index: 60;
   border: 1px solid var(--border-strong);
   border-radius: 8px;
