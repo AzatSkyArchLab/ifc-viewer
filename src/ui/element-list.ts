@@ -83,7 +83,7 @@ export class ElementList {
   /** Resync the hidden type "layers" from the outside (undo / redo). */
   setHiddenTypes(types: Set<string>): void {
     this.hiddenTypes = new Set(types);
-    this.render();
+    this.refreshTypeIcons();
   }
 
   private toggleType(typeLower: string): void {
@@ -91,7 +91,23 @@ export class ElementList {
     if (nowVisible) this.hiddenTypes.delete(typeLower);
     else this.hiddenTypes.add(typeLower);
     this.onTypeVisibility(typeLower, nowVisible);
-    this.render();
+    this.refreshTypeIcons(); // update in place — a full render would collapse groups
+  }
+
+  /**
+   * Reflects hiddenTypes onto every group's eye icon + dimming in place, so a
+   * layer toggle (or undo/redo) never re-renders the list — which would reset
+   * every <details> group to its default open state and collapse the panel.
+   */
+  private refreshTypeIcons(): void {
+    for (const group of this.root.querySelectorAll<HTMLElement>(".group")) {
+      const type = group.dataset.type;
+      if (type == null) continue;
+      const hidden = this.hiddenTypes.has(type);
+      group.classList.toggle("type-hidden", hidden);
+      const eye = group.querySelector(".eye");
+      if (eye) eye.textContent = hidden ? "🚫" : "👁";
+    }
   }
 
   private match(e: IfcElement): boolean {
@@ -157,6 +173,7 @@ export class ElementList {
       const isHidden = this.hiddenTypes.has(typeLower);
       const group = document.createElement("details");
       group.className = isHidden ? "group type-hidden" : "group";
+      group.dataset.type = typeLower; // for in-place eye/dimming updates
       group.open = (openByDefault && sortedTypes.length <= 8) || !!this.filter;
 
       const summary = document.createElement("summary");
