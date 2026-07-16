@@ -66,6 +66,25 @@ const btnHide = byId<HTMLButtonElement>("btn-hide");
 const btnShowAll = byId<HTMLButtonElement>("btn-showall");
 const btnUndo = byId<HTMLButtonElement>("btn-undo");
 const btnRedo = byId<HTMLButtonElement>("btn-redo");
+const loadingEl = byId("loading");
+const loadingTextEl = byId("loading-text");
+
+/** Shows / hides the blocking spinner shown while an IFC is parsed. */
+function setLoading(on: boolean, text?: string): void {
+  if (text) loadingTextEl.textContent = text;
+  loadingEl.hidden = !on;
+}
+
+/**
+ * Resolves once the browser has actually painted. web-ifc parsing blocks the
+ * main thread, so the spinner has to reach the screen *before* it starts —
+ * a single rAF still fires before the paint, hence the double hop.
+ */
+function painted(): Promise<void> {
+  return new Promise((resolve) =>
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+  );
+}
 
 /** Ordered selection of composite keys; the last is the most recent pick. */
 let selection: number[] = [];
@@ -249,11 +268,17 @@ async function openTrm(file: File): Promise<void> {
 async function openFiles(files: File[]): Promise<void> {
   if (files.length === 0) return;
   setStatus(`Загрузка ${files.length} файл(ов)…`);
+  setLoading(true, "Загрузка IFC…");
+  await painted();
   try {
     parser.clearAll();
     loadedModels = [];
     loadedNames = [];
-    for (const file of files) {
+    for (const [i, file] of files.entries()) {
+      if (files.length > 1) {
+        setLoading(true, `Загрузка IFC… ${i + 1}/${files.length}`);
+        await painted();
+      }
       const data = new Uint8Array(await file.arrayBuffer());
       const modelId = await parser.add(data, file.name);
       loadedModels.push({ file, modelId });
@@ -291,6 +316,8 @@ async function openFiles(files: File[]): Promise<void> {
   } catch (err) {
     console.error(err);
     setStatus(`Ошибка загрузки: ${(err as Error).message}`);
+  } finally {
+    setLoading(false);
   }
 }
 
