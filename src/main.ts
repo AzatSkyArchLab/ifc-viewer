@@ -14,6 +14,8 @@ import {
   cloneState,
   emptyState,
   resolve,
+  typeGroups,
+  typeKey,
   type StoreyIndex,
   type VisState,
 } from "./core/visibility.ts";
@@ -271,7 +273,7 @@ async function openFiles(files: File[]): Promise<void> {
     idx = buildStoreyIndex(storeys);
     vis = emptyState();
     history.clear();
-    tree.setData(parser.getModels(), storeys);
+    tree.setData(parser.getModels(), storeys, typeGroups(elements));
 
     // setElements seeds the default type-hides (IfcSpace) via the type handler;
     // record them as the baseline, not as an undoable action.
@@ -295,10 +297,12 @@ async function openFiles(files: File[]): Promise<void> {
 // ── Wiring ─────────────────────────────────────────────────────────────────
 
 list.setSelectHandler((key, additive) => select(key, additive));
-list.setTypeVisibilityHandler((typeLower, visible) => {
+// A layer eye in the element list toggles that type for ONE model only.
+list.setTypeVisibilityHandler((modelId, typeLower, visible) => {
+  const k = typeKey(modelId, typeLower);
   const mutate = () => {
-    if (visible) vis.hiddenTypes.delete(typeLower);
-    else vis.hiddenTypes.add(typeLower);
+    if (visible) vis.hiddenTypes.delete(k);
+    else vis.hiddenTypes.add(k);
   };
   if (seeding) mutate();
   else act(mutate);
@@ -342,6 +346,17 @@ tree.onFloorGroup((storeyKeys, visible) =>
     }
   }),
 );
+// "All models" layer toggle — flips the layer in every model that has it.
+tree.onLayerGroup((modelIds, typeLower, visible) => {
+  act(() => {
+    for (const m of modelIds) {
+      const k = typeKey(m, typeLower);
+      if (visible) vis.hiddenTypes.delete(k);
+      else vis.hiddenTypes.add(k);
+    }
+  });
+  list.setHiddenTypes(vis.hiddenTypes); // resync the element list's eyes
+});
 tree.onFocus((modelId, storeyKey) =>
   act(() => {
     const same =

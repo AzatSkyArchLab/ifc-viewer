@@ -1,10 +1,19 @@
 import type { IfcElement } from "../core/types.ts";
+import { typeKey } from "../core/visibility.ts";
 
 /** additive === true — click with Shift (multi-select). The id is a scene key. */
 export type ElementSelectHandler = (key: number, additive: boolean) => void;
 
-/** Called when a type "layer" is toggled: the (lower-case) type and its new visibility. */
-export type TypeVisibilityHandler = (typeLower: string, visible: boolean) => void;
+/**
+ * Called when a type "layer" is toggled for ONE model: its modelId, the
+ * (lower-case) type and the new visibility. Layers are per-model, like storeys —
+ * hiding IfcWall in the arch model leaves the struct model's walls alone.
+ */
+export type TypeVisibilityHandler = (
+  modelId: number,
+  typeLower: string,
+  visible: boolean,
+) => void;
 
 /** IFC types hidden on load (lower-case type names). */
 const DEFAULT_HIDDEN = new Set(["ifcspace"]);
@@ -21,7 +30,7 @@ export class ElementList {
   private scope: Set<number> | null = null;
   private selected = new Set<number>();
   private hidden = new Set<number>();
-  /** Type "layers" hidden in the scene (lower-case type names). */
+  /** Type "layers" hidden per model — keys from typeKey(modelId, typeLower). */
   private hiddenTypes = new Set<string>();
   private onSelect: ElementSelectHandler = () => {};
   private onTypeVisibility: TypeVisibilityHandler = () => {};
@@ -41,11 +50,20 @@ export class ElementList {
     this.scope = null;
     this.selected.clear();
     this.hidden.clear();
-    // Hide the default-hidden types (IfcSpace) in the scene from the start.
-    const present = new Set(elements.map((e) => e.typeName.toLowerCase()));
-    this.hiddenTypes = new Set([...DEFAULT_HIDDEN].filter((t) => present.has(t)));
+    // Hide the default-hidden types (IfcSpace) from the start — in every model
+    // that actually has them, since layers are per-model.
+    const seed: { modelId: number; typeLower: string }[] = [];
+    this.hiddenTypes = new Set();
+    for (const e of elements) {
+      const t = e.typeName.toLowerCase();
+      if (!DEFAULT_HIDDEN.has(t)) continue;
+      const k = typeKey(e.modelId, t);
+      if (this.hiddenTypes.has(k)) continue;
+      this.hiddenTypes.add(k);
+      seed.push({ modelId: e.modelId, typeLower: t });
+    }
     this.render();
-    for (const t of this.hiddenTypes) this.onTypeVisibility(t, false);
+    for (const s of seed) this.onTypeVisibility(s.modelId, s.typeLower, false);
   }
 
   setFilter(text: string): void {
@@ -86,24 +104,28 @@ export class ElementList {
     this.refreshTypeIcons();
   }
 
-  private toggleType(typeLower: string): void {
-    const nowVisible = this.hiddenTypes.has(typeLower);
-    if (nowVisible) this.hiddenTypes.delete(typeLower);
-    else this.hiddenTypes.add(typeLower);
-    this.onTypeVisibility(typeLower, nowVisible);
+  /** Toggles one type "layer" of ONE model (the eye inside that model's group). */
+  private toggleType(modelId: number, typeLower: string): void {
+    const k = typeKey(modelId, typeLower);
+    const nowVisible = this.hiddenTypes.has(k);
+    if (nowVisible) this.hiddenTypes.delete(k);
+    else this.hiddenTypes.add(k);
+    this.onTypeVisibility(modelId, typeLower, nowVisible);
     this.refreshTypeIcons(); // update in place — a full render would collapse groups
   }
 
   /**
    * Reflects hiddenTypes onto every group's eye icon + dimming in place, so a
-   * layer toggle (or undo/redo) never re-renders the list — which would reset
-   * every <details> group to its default open state and collapse the panel.
+   * layer toggle (or undo/redo, or an "all models" toggle from the tree) never
+   * re-renders the list — which would reset every <details> group to its
+   * default open state and collapse the panel.
    */
   private refreshTypeIcons(): void {
     for (const group of this.root.querySelectorAll<HTMLElement>(".group")) {
       const type = group.dataset.type;
-      if (type == null) continue;
-      const hidden = this.hiddenTypes.has(type);
+      const model = group.dataset.model;
+      if (type == null || model == null) continue;
+      const hidden = this.hiddenTypes.has(typeKey(Number(model), type));
       group.classList.toggle("type-hidden", hidden);
       const eye = group.querySelector(".eye");
       if (eye) eye.textContent = hidden ? "🚫" : "👁";
@@ -133,21 +155,23 @@ export class ElementList {
       return;
     }
 
-    const models = [...new Set(visible.map((e) => e.modelName))];
-    if (models.length <= 1) {
+    // Group by modelId, not by file name: two files may share a name, and a
+    // type group must belong to exactly one model (layers are per-model).
+    const modelIds = [...new Set(visible.map((e) => e.modelId))];
+    if (modelIds.length <= 1) {
       this.renderTypes(this.root, visible, true);
       return;
     }
 
     // Several models → a collapsible group per file.
-    for (const modelName of models) {
-      const items = visible.filter((e) => e.modelName === modelName);
+    for (const modelId of modelIds) {
+      const items = visible.filter((e) => e.modelId === modelId);
       const model = document.createElement("details");
       model.className = "model-group";
-      model.open = models.length <= 3 || !!this.filter;
+      model.open = modelIds.length <= 3 || !!this.filter;
       const summary = document.createElement("summary");
       summary.innerHTML =
-        `<span class="model-name">${escapeHtml(modelName)}</span>` +
+        `<span class="model-name">${escapeHtml(items[0].modelName)}</span>` +
         `<span class="count">${items.length}</span>`;
       model.appendChild(summary);
       this.renderTypes(model, items, false);
@@ -170,21 +194,24 @@ export class ElementList {
     for (const typeName of sortedTypes) {
       const groupItems = groups.get(typeName)!;
       const typeLower = typeName.toLowerCase();
-      const isHidden = this.hiddenTypes.has(typeLower);
+      // A group always sits inside exactly one model (render splits by modelId).
+      const modelId = groupItems[0].modelId;
+      const isHidden = this.hiddenTypes.has(typeKey(modelId, typeLower));
       const group = document.createElement("details");
       group.className = isHidden ? "group type-hidden" : "group";
       group.dataset.type = typeLower; // for in-place eye/dimming updates
+      group.dataset.model = String(modelId);
       group.open = (openByDefault && sortedTypes.length <= 8) || !!this.filter;
 
       const summary = document.createElement("summary");
       summary.innerHTML =
-        `<button class="eye" type="button" title="Показать/скрыть в 3D">${isHidden ? "🚫" : "👁"}</button>` +
+        `<button class="eye" type="button" title="Показать/скрыть в 3D (только эта модель)">${isHidden ? "🚫" : "👁"}</button>` +
         `<span class="type">${escapeHtml(typeName)}</span>` +
         `<span class="count">${groupItems.length}</span>`;
       summary.querySelector(".eye")?.addEventListener("click", (ev) => {
         ev.preventDefault();
         ev.stopPropagation();
-        this.toggleType(typeLower);
+        this.toggleType(modelId, typeLower);
       });
       group.appendChild(summary);
 

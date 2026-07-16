@@ -1037,6 +1037,29 @@ body {
   letter-spacing: 0.04em;
 }
 
+/* Collapsible "all models" layers section (a model easily carries 20+ types). */
+.mt-layers > summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+.mt-layers > summary::-webkit-details-marker {
+  display: none;
+}
+
+.mt-layers > summary::before {
+  content: "▸ ";
+  font-size: 9px;
+}
+
+.mt-layers[open] > summary::before {
+  content: "▾ ";
+}
+
+.mt-layers > summary:hover {
+  color: var(--text-soft);
+}
+
 .mt-master {
   display: flex;
   align-items: center;

@@ -1,6 +1,12 @@
 import type { IfcStorey } from "../core/types.ts";
 import { modelOfKey } from "../core/types.ts";
-import { floorGroups, type FloorGroup, type VisState } from "../core/visibility.ts";
+import {
+  floorGroups,
+  typeKey,
+  type FloorGroup,
+  type TypeGroup,
+  type VisState,
+} from "../core/visibility.ts";
 
 /** One loaded model in the tree. */
 export interface TreeModel {
@@ -23,11 +29,13 @@ export class ModelTree {
   private models: TreeModel[] = [];
   private storeys: IfcStorey[] = [];
   private groups: FloorGroup[] = [];
+  private types: TypeGroup[] = [];
   private vis: VisState | null = null;
 
   // Rendered handles, updated in-place by setState (no re-render on every change).
   private masterEye: HTMLElement | null = null;
   private groupEye = new Map<number, HTMLElement>(); // group index → eye
+  private layerEye = new Map<string, HTMLElement>(); // typeLower → eye
   private modelEye = new Map<number, HTMLElement>(); // modelId → eye
   private modelRow = new Map<number, HTMLElement>(); // modelId → <details>
   private storeyEye = new Map<number, HTMLElement>(); // storeyKey → eye
@@ -38,6 +46,11 @@ export class ModelTree {
   private onStoreyCb: (storeyKey: number, visible: boolean) => void = () => {};
   private onFloorGroupCb: (storeyKeys: number[], visible: boolean) => void =
     () => {};
+  private onLayerGroupCb: (
+    modelIds: number[],
+    typeLower: string,
+    visible: boolean,
+  ) => void = () => {};
   private onFocusCb: (modelId: number, storeyKey: number) => void = () => {};
 
   constructor(private root: HTMLElement) {}
@@ -54,14 +67,20 @@ export class ModelTree {
   onFloorGroup(cb: (storeyKeys: number[], visible: boolean) => void): void {
     this.onFloorGroupCb = cb;
   }
+  onLayerGroup(
+    cb: (modelIds: number[], typeLower: string, visible: boolean) => void,
+  ): void {
+    this.onLayerGroupCb = cb;
+  }
   onFocus(cb: (modelId: number, storeyKey: number) => void): void {
     this.onFocusCb = cb;
   }
 
-  setData(models: TreeModel[], storeys: IfcStorey[]): void {
+  setData(models: TreeModel[], storeys: IfcStorey[], types: TypeGroup[]): void {
     this.models = models;
     this.storeys = storeys;
     this.groups = floorGroups(storeys);
+    this.types = types;
     this.render();
   }
 
@@ -69,6 +88,7 @@ export class ModelTree {
     this.models = [];
     this.storeys = [];
     this.groups = [];
+    this.types = [];
     this.vis = null;
     this.root.innerHTML = "";
   }
@@ -89,6 +109,15 @@ export class ModelTree {
       const allHidden = g.storeyKeys.every((k) => vis.hiddenStoreys.has(k));
       eye.textContent = allHidden ? EYE_OFF : EYE;
     });
+    for (const t of this.types) {
+      const eye = this.layerEye.get(t.typeLower);
+      if (!eye) continue;
+      // "Off" only once the layer is hidden in every model that has it.
+      const allHidden = t.modelIds.every((m) =>
+        vis.hiddenTypes.has(typeKey(m, t.typeLower)),
+      );
+      eye.textContent = allHidden ? EYE_OFF : EYE;
+    }
     for (const m of this.models) {
       const eye = this.modelEye.get(m.modelId);
       if (eye) eye.textContent = vis.hiddenModels.has(m.modelId) ? EYE_OFF : EYE;
@@ -113,6 +142,7 @@ export class ModelTree {
     this.root.innerHTML = "";
     this.masterEye = null;
     this.groupEye.clear();
+    this.layerEye.clear();
     this.modelEye.clear();
     this.modelRow.clear();
     this.storeyEye.clear();
@@ -160,6 +190,35 @@ export class ModelTree {
         this.groupEye.set(i, eye);
         this.root.appendChild(row);
       });
+    }
+
+    // Layers shared across models ("together") — the per-model layer toggle is
+    // the eye on each type group inside the element list. Collapsed by default:
+    // a model easily carries 20+ types, which would bury the Models section.
+    if (this.types.length > 0) {
+      const box = document.createElement("details");
+      box.className = "mt-layers";
+      const head = document.createElement("summary");
+      head.className = "mt-section";
+      head.textContent = `Слои (все модели) · ${this.types.length}`;
+      box.appendChild(head);
+      for (const t of this.types) {
+        const row = document.createElement("div");
+        row.className = "mt-floor";
+        const eye = eyeButton();
+        eye.title = "Показать / скрыть слой во всех моделях";
+        eye.addEventListener("click", () => {
+          if (!this.vis) return;
+          const allHidden = t.modelIds.every((m) =>
+            this.vis!.hiddenTypes.has(typeKey(m, t.typeLower)),
+          );
+          this.onLayerGroupCb(t.modelIds, t.typeLower, allHidden);
+        });
+        row.append(eye, label(t.label), count(t.count));
+        this.layerEye.set(t.typeLower, eye);
+        box.appendChild(row);
+      }
+      this.root.appendChild(box);
     }
 
     // Per-model section, each expandable to its storeys (top floor first).

@@ -8,7 +8,16 @@
  * which keys to hide, and which to draw as locked "ghost" context.
  */
 import { modelOfKey } from "./types.ts";
-import type { IfcStorey } from "./types.ts";
+import type { IfcElement, IfcStorey } from "./types.ts";
+
+/**
+ * State key for a type "layer" of ONE model. Layers are per-model exactly like
+ * storeys are: hiding IfcWall in the arch model must not hide it in the struct
+ * model. An "all models" toggle simply flips this key for every model.
+ */
+export function typeKey(modelId: number, typeLower: string): string {
+  return `${modelId}:${typeLower}`;
+}
 
 /** A snapshot of everything that affects element visibility. Cloneable for undo. */
 export interface VisState {
@@ -23,7 +32,7 @@ export interface VisState {
   focus: { modelId: number; storeyKey: number } | null;
   /** Manually hidden elements (Isolate / Hide of the selection). */
   hiddenElems: Set<number>;
-  /** Type "layers" hidden in the scene (lower-case IFC type names). */
+  /** Type "layers" hidden, per model — keys from `typeKey(modelId, typeLower)`. */
   hiddenTypes: Set<string>;
   /**
    * Elements pinned visible regardless of any hide (a check finding clicked in
@@ -104,9 +113,12 @@ export function resolve(
     const model = modelOfKey(key);
     const storey = idx.elemStorey.get(key);
 
-    // 1. Manual hide or a hidden type layer — always wins (e.g. IfcSpace stays
-    //    hidden even inside a ghosted model).
-    if (s.hiddenElems.has(key) || s.hiddenTypes.has(typeOf(key).toLowerCase())) {
+    // 1. Manual hide or a hidden type layer of THIS model — always wins (e.g.
+    //    IfcSpace stays hidden even inside a ghosted model).
+    if (
+      s.hiddenElems.has(key) ||
+      s.hiddenTypes.has(typeKey(model, typeOf(key).toLowerCase()))
+    ) {
       hidden.add(key);
       continue;
     }
@@ -176,4 +188,47 @@ export function floorGroups(storeys: IfcStorey[]): FloorGroup[] {
     groups.push({ label: g.label, storeyKeys: g.keys, elev });
   }
   return groups.sort((a, b) => b.elev - a.elev);
+}
+
+/** A type "layer" present across models (for the "all models" section of the tree). */
+export interface TypeGroup {
+  /** Display name, e.g. "IfcWall". */
+  label: string;
+  /** Lower-case type name — the key component in `typeKey`. */
+  typeLower: string;
+  /** Models that actually contain this type. */
+  modelIds: number[];
+  /** Element count across those models. */
+  count: number;
+}
+
+/**
+ * Distinct element types across all loaded models, sorted by name. Mirrors
+ * `floorGroups` — it backs the "all models" layer section, whose toggle flips
+ * the layer in every model that has it.
+ */
+export function typeGroups(elements: IfcElement[]): TypeGroup[] {
+  const byType = new Map<
+    string,
+    { label: string; models: Set<number>; count: number }
+  >();
+  for (const e of elements) {
+    const lower = e.typeName.toLowerCase();
+    const g = byType.get(lower) ?? {
+      label: e.typeName,
+      models: new Set<number>(),
+      count: 0,
+    };
+    g.models.add(e.modelId);
+    g.count++;
+    byType.set(lower, g);
+  }
+  return [...byType.entries()]
+    .map(([typeLower, g]) => ({
+      label: g.label,
+      typeLower,
+      modelIds: [...g.models],
+      count: g.count,
+    }))
+    .sort((a, b) => a.label.localeCompare(b.label));
 }
