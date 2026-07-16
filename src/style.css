@@ -198,6 +198,22 @@ body {
   display: block;
 }
 
+/* Perf overlay (FPS / draw calls / triangles); toggle with the ` key or ?stats. */
+.viewer-stats {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 20;
+  padding: 4px 8px;
+  border-radius: 5px;
+  background: rgba(17, 20, 24, 0.72);
+  color: #d6f5d6;
+  font: 600 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+  user-select: none;
+}
+
 /* ── Checks panel ───────────────────────────────────────────────────────── */
 
 .checks {

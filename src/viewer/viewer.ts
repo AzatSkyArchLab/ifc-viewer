@@ -14,7 +14,7 @@ const SPACE_COLOR = new THREE.Color(0x33aaff);
 /** Colour for IfcSpace top-face outline edges. */
 const SPACE_EDGE_COLOR = new THREE.Color(0x0a4fa0);
 /** Threshold in pixels: a click that moved more than this is treated as orbit. */
-const DRAG_THRESHOLD = 5;
+const DRAG_THRESHOLD = 6;
 
 /**
  * Minimal three.js viewer for IFC geometry (light theme).
@@ -33,6 +33,8 @@ export class Viewer {
   private raycaster = new THREE.Raycaster();
   private pointer = new THREE.Vector2();
   private pointerDownPos = new THREE.Vector2();
+  /** Element picked at pointer-down (before any orbit); committed on a click. */
+  private pendingPick: number | null = null;
 
   /** expressID → element meshes (an element may have several geometries). */
   private byExpressID = new Map<number, THREE.Mesh[]>();
@@ -62,6 +64,11 @@ export class Viewer {
   private readonly highRatio: number;
   private readonly lowRatio = 1;
   private ratioIsLow = false;
+
+  /** Perf overlay (FPS / draw calls / triangles); toggle with ` or ?stats. */
+  private statsEl: HTMLDivElement | null = null;
+  private statsLastT = 0;
+  private statsFps = 0;
 
   private onSelect: SelectHandler = () => {};
 
@@ -105,7 +112,48 @@ export class Viewer {
     this.renderer.domElement.addEventListener("click", this.handleClick);
     window.addEventListener("resize", this.handleResize);
 
+    this.setupStats();
     this.animate();
+  }
+
+  /** Hidden perf overlay; `?stats` shows it on load, the ` key toggles it. */
+  private setupStats(): void {
+    const el = document.createElement("div");
+    el.className = "viewer-stats";
+    el.style.display = new URLSearchParams(location.search).has("stats")
+      ? "block"
+      : "none";
+    this.container.appendChild(el);
+    this.statsEl = el;
+    window.addEventListener("keydown", (e) => {
+      if (e.key === "`" || e.key === "ё") {
+        el.style.display = el.style.display === "none" ? "block" : "none";
+        this.requestRender();
+      }
+    });
+  }
+
+  /** Updates the perf overlay from the frame just rendered (draw-call bound
+   *  large scenes show here as a high `calls` count that BatchedMesh collapses). */
+  private updateStats(): void {
+    const el = this.statsEl;
+    if (!el || el.style.display === "none") return;
+    const now = performance.now();
+    if (this.statsLastT) {
+      const dt = now - this.statsLastT;
+      if (dt < 250) {
+        // skip the idle gap when movement resumes
+        const fps = 1000 / Math.max(dt, 0.001);
+        this.statsFps = this.statsFps ? this.statsFps * 0.9 + fps * 0.1 : fps;
+      }
+    }
+    this.statsLastT = now;
+    const r = this.renderer.info.render;
+    const tris =
+      r.triangles >= 1e6
+        ? `${(r.triangles / 1e6).toFixed(1)}M`
+        : `${(r.triangles / 1e3).toFixed(0)}k`;
+    el.textContent = `${this.statsFps.toFixed(0)} fps · ${r.calls} calls · ${tris} tris`;
   }
 
   setSelectHandler(handler: SelectHandler): void {
@@ -275,6 +323,10 @@ export class Viewer {
 
   private onPointerDown = (event: PointerEvent): void => {
     this.pointerDownPos.set(event.clientX, event.clientY);
+    // Pick now, before an orbit can rotate the camera: the click just commits
+    // this hit, so a tiny drag between press and release never mis-selects or
+    // misses (the old code ray-picked at click time, after the view had moved).
+    this.pendingPick = this.pickAt(event.clientX, event.clientY, !event.altKey);
   };
 
   private handleClick = (event: MouseEvent): void => {
@@ -284,25 +336,35 @@ export class Viewer {
       event.clientY - this.pointerDownPos.y,
     );
     if (moved > DRAG_THRESHOLD) return;
+    this.onSelect(this.pendingPick, event.shiftKey);
+  };
 
+  /**
+   * Ray-picks the element under a screen position against the current camera.
+   * Returns the composite element key, or null for empty space. Hidden and
+   * ghosted (locked) meshes are skipped; when IfcSpace rooms are shown they are
+   * preferred (they sit behind walls) unless `preferSpace` is false (Alt-click).
+   */
+  private pickAt(
+    clientX: number,
+    clientY: number,
+    preferSpace: boolean,
+  ): number | null {
     const rect = this.renderer.domElement.getBoundingClientRect();
-    this.pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-    this.pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+    this.pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+    this.pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1;
     this.raycaster.setFromCamera(this.pointer, this.camera);
 
     const hits = this.raycaster.intersectObjects(this.modelGroup.children, false);
-    // Do not pick hidden meshes, nor ghosted (locked) context models.
-    const visible = hits.filter((h) => h.object.visible && !h.object.userData.locked);
-    // When the IfcSpace layer is on, rooms sit behind slabs/walls; prefer the
-    // nearest visible space so each room stays clickable. Alt+click picks the
-    // solid element under the cursor instead.
-    const space = event.altKey
-      ? undefined
-      : visible.find((h) => h.object.userData.space);
+    const visible = hits.filter(
+      (h) => h.object.visible && !h.object.userData.locked,
+    );
+    const space = preferSpace
+      ? visible.find((h) => h.object.userData.space)
+      : undefined;
     const hit = space ?? visible[0];
-    const id = hit ? (hit.object.userData.key as number) : null;
-    this.onSelect(id, event.shiftKey);
-  };
+    return hit ? (hit.object.userData.key as number) : null;
+  }
 
   /** Frames the camera on a specific set of elements (by scene key). Zooms in
    *  without touching scope/hidden, so it never resets an active isolation. */
@@ -387,6 +449,7 @@ export class Viewer {
     this.controls.update();
     this.applyRenderQuality(this.needsRender);
     this.renderer.render(this.scene, this.camera);
+    this.updateStats();
   };
 
   /** Low pixel ratio while moving (fast), full ratio once settled (crisp). */
