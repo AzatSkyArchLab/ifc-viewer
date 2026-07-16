@@ -79,11 +79,21 @@ function setLoading(on: boolean, text?: string): void {
  * Resolves once the browser has actually painted. web-ifc parsing blocks the
  * main thread, so the spinner has to reach the screen *before* it starts —
  * a single rAF still fires before the paint, hence the double hop.
+ *
+ * The timer is not a nicety: rAF never fires in a hidden tab, and switching
+ * away mid-load is exactly what people do, so waiting on rAF alone would stall
+ * the parse forever. Whichever comes first wins.
  */
 function painted(): Promise<void> {
-  return new Promise((resolve) =>
-    requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
-  );
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, 100);
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        clearTimeout(timer);
+        resolve();
+      }),
+    );
+  });
 }
 
 /** Ordered selection of composite keys; the last is the most recent pick. */
