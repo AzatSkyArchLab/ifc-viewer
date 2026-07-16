@@ -16,10 +16,25 @@ const SPACE_EDGE_COLOR = new THREE.Color(0x0a4fa0);
 /** Threshold in pixels: a click that moved more than this is treated as orbit. */
 const DRAG_THRESHOLD = 6;
 
+/** Where an element's geometry lives inside the batches (one entry per geometry). */
+interface InstRef {
+  batch: "solid" | "trans";
+  /** instanceId (=== geometryId, added in lockstep with the ghost twin). */
+  id: number;
+  /** geometryId, for per-geometry bounds (getBoundingBoxAt). */
+  geoId: number;
+}
+
 /**
  * Minimal three.js viewer for IFC geometry (light theme).
  * Takes neutral IfcMeshData[] from the core — independent of web-ifc.
- * Supports multi-selection and visibility control (isolate / hide / show all).
+ *
+ * All element geometry lives in a few THREE.BatchedMesh objects (one opaque, one
+ * transparent, plus a gray "ghost" twin of each) instead of one Mesh per element,
+ * so the whole model draws in a handful of calls regardless of element count.
+ * Per-element visibility/colour is driven by setVisibleAt / setColorAt; picking
+ * uses the batch raycast (batchId → element key). Supports multi-selection and
+ * visibility control (isolate / hide / show all / floor focus).
  */
 export class Viewer {
   private renderer: THREE.WebGLRenderer;
@@ -36,19 +51,49 @@ export class Viewer {
   /** Element picked at pointer-down (before any orbit); committed on a click. */
   private pendingPick: number | null = null;
 
-  /** expressID → element meshes (an element may have several geometries). */
-  private byExpressID = new Map<number, THREE.Mesh[]>();
+  // ── Batched geometry ─────────────────────────────────────────────────────────
+  /** Opaque solids / translucent (IfcSpace + a<1) / their gray ghost twins. */
+  private solids: THREE.BatchedMesh | null = null;
+  private transparent: THREE.BatchedMesh | null = null;
+  private ghostSolid: THREE.BatchedMesh | null = null;
+  private ghostTrans: THREE.BatchedMesh | null = null;
+  /** Element key → its instances across the batches. */
+  private byKey = new Map<number, InstRef[]>();
+  /** Per-key IfcSpace top-face outlines (kept as individual LineSegments). */
+  private spaceOutlines = new Map<number, THREE.LineSegments[]>();
+  /** instanceId → element key, per batch. */
+  private solidKey: number[] = [];
+  private transKey: number[] = [];
+  /** 1 iff the transparent instance is a real IfcSpace (0 for a<1 glass). */
+  private transSpace = new Uint8Array(0);
+  /** instanceId → base colour, per batch (Vector4 carries alpha for transparent). */
+  private solidBase: THREE.Color[] = [];
+  private transBase: THREE.Vector4[] = [];
+  /** Guards against redundant setColorAt (which would re-upload the colour texture). */
+  private solidColorCache = new Int32Array(0); // packed 0xRRGGBB, -1 = unset
+  private transColorCache = new Float32Array(0); // 4 per instance
+
   /** Current selection. */
   private selection = new Set<number>();
-  /** Each mesh's own material — the base to restore under highlight / ghost. */
-  private baseMaterial = new Map<THREE.Mesh, THREE.Material>();
   /** Last resolved visibility (from main), re-used when the selection changes. */
   private lastHidden = new Set<number>();
   private lastGhost = new Set<number>();
-  /** A single shared highlight material for all selected meshes. */
-  private highlightMaterial: THREE.MeshLambertMaterial;
-  /** Shared translucent material for ghosted (locked context) models. */
-  private ghostMaterial = new THREE.MeshLambertMaterial({
+  /** Current highlight colour (set per selection; applied via setColorAt). */
+  private highlightColor = new THREE.Color(HIGHLIGHT_COLOR);
+
+  /** Shared batch materials — colour comes from per-instance setColorAt. */
+  private solidMat = new THREE.MeshLambertMaterial({
+    color: 0xffffff,
+    side: THREE.DoubleSide,
+  });
+  private transMat = new THREE.MeshLambertMaterial({
+    color: 0xffffff, // white so the per-instance RGBA is not double-multiplied
+    transparent: true,
+    opacity: 1,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+  private ghostMat = new THREE.MeshBasicMaterial({
     color: 0xb0b4ba,
     transparent: true,
     opacity: 0.16,
@@ -57,6 +102,11 @@ export class Viewer {
   });
   /** Shared line material for IfcSpace top-face outlines. */
   private spaceEdgeMaterial = new THREE.LineBasicMaterial({ color: SPACE_EDGE_COLOR });
+
+  /** Scratch objects reused on the hot paths. */
+  private _box = new THREE.Box3();
+  private _meshBox = new THREE.Box3();
+  private _scratchVec4 = new THREE.Vector4();
 
   /** On-demand rendering: only draw a frame when the scene actually changed. */
   private needsRender = true;
@@ -98,13 +148,6 @@ export class Viewer {
     this.controls.enableDamping = true;
     this.controls.addEventListener("change", this.requestRender);
 
-    this.highlightMaterial = new THREE.MeshLambertMaterial({
-      color: HIGHLIGHT_COLOR,
-      emissive: HIGHLIGHT_COLOR,
-      emissiveIntensity: 0.3,
-      side: THREE.DoubleSide,
-    });
-
     this.addLights();
     this.addGround();
 
@@ -133,8 +176,7 @@ export class Viewer {
     });
   }
 
-  /** Updates the perf overlay from the frame just rendered (draw-call bound
-   *  large scenes show here as a high `calls` count that BatchedMesh collapses). */
+  /** Updates the perf overlay from the frame just rendered. */
   private updateStats(): void {
     const el = this.statsEl;
     if (!el || el.style.display === "none") return;
@@ -175,68 +217,131 @@ export class Viewer {
     this.scene.add(this.grid);
   }
 
+  /** Whole-model bounds from the batches (all instances active at load). */
+  private modelBounds(target: THREE.Box3): THREE.Box3 {
+    target.makeEmpty();
+    if (this.solids) {
+      this.solids.computeBoundingBox();
+      if (this.solids.boundingBox) target.union(this.solids.boundingBox);
+    }
+    if (this.transparent) {
+      this.transparent.computeBoundingBox();
+      if (this.transparent.boundingBox) target.union(this.transparent.boundingBox);
+    }
+    return target;
+  }
+
   /** Drops the ground grid to the model's underside so it never cuts through. */
   private groundToModel(): void {
-    const box = new THREE.Box3();
-    const meshBox = new THREE.Box3();
-    for (const child of this.modelGroup.children) {
-      const mesh = child as THREE.Mesh;
-      if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
-      if (mesh.geometry.boundingBox) box.union(meshBox.copy(mesh.geometry.boundingBox));
-    }
+    const box = this.modelBounds(this._box);
     this.grid.position.y = box.isEmpty() ? 0 : box.min.y;
   }
 
-  /** Loads model geometry into the scene, clearing the previous one. */
+  /**
+   * Loads model geometry into the scene, clearing the previous one. Geometry is
+   * partitioned into an opaque and a translucent BatchedMesh (plus gray ghost
+   * twins built in lockstep), so the whole model draws in a few calls. Vertices
+   * already bake world coordinates → every instance keeps the identity matrix.
+   */
   loadMeshes(meshes: IfcMeshData[]): void {
     this.clear();
 
+    // Pass 1 — pre-scan to size the batches.
+    let solidCount = 0;
+    let solidVerts = 0;
+    let solidIdx = 0;
+    let transCount = 0;
+    let transVerts = 0;
+    let transIdx = 0;
+    for (const data of meshes) {
+      const isTrans = data.space || data.color.a < 1;
+      const verts = data.positions.length / 3;
+      const idx = data.indices.length;
+      if (isTrans) {
+        transCount++;
+        transVerts += verts;
+        transIdx += idx;
+      } else {
+        solidCount++;
+        solidVerts += verts;
+        solidIdx += idx;
+      }
+    }
+
+    // Construct only the batches we need (a model may be all-solid or all-space).
+    if (solidCount > 0) {
+      this.solids = new THREE.BatchedMesh(solidCount, solidVerts, solidIdx, this.solidMat);
+      this.ghostSolid = new THREE.BatchedMesh(solidCount, solidVerts, solidIdx, this.ghostMat);
+      this.modelGroup.add(this.solids, this.ghostSolid);
+      this.solidKey = new Array(solidCount);
+      this.solidBase = new Array(solidCount);
+      this.solidColorCache = new Int32Array(solidCount).fill(-1);
+    }
+    if (transCount > 0) {
+      this.transparent = new THREE.BatchedMesh(transCount, transVerts, transIdx, this.transMat);
+      this.transparent.renderOrder = 1;
+      this.ghostTrans = new THREE.BatchedMesh(transCount, transVerts, transIdx, this.ghostMat);
+      this.ghostTrans.renderOrder = 1;
+      this.modelGroup.add(this.transparent, this.ghostTrans);
+      this.transKey = new Array(transCount);
+      this.transBase = new Array(transCount);
+      this.transSpace = new Uint8Array(transCount);
+      this.transColorCache = new Float32Array(transCount * 4).fill(NaN);
+    }
+
+    // Pass 2 — fill the batches.
     for (const data of meshes) {
       const geometry = new THREE.BufferGeometry();
-      geometry.setAttribute(
-        "position",
-        new THREE.BufferAttribute(data.positions, 3),
-      );
+      geometry.setAttribute("position", new THREE.BufferAttribute(data.positions, 3));
       geometry.setAttribute("normal", new THREE.BufferAttribute(data.normals, 3));
       geometry.setIndex(new THREE.BufferAttribute(data.indices, 1));
-      // Positions are already in (recentred) world IFC coordinates.
 
-      // IfcSpace bodies are drawn translucent (and non-occluding) so rooms are
-      // visible/clickable without hiding the walls behind them.
-      const material = data.space
-        ? new THREE.MeshLambertMaterial({
-            color: SPACE_COLOR,
-            side: THREE.DoubleSide,
-            transparent: true,
-            opacity: 0.28,
-            depthWrite: false,
-          })
-        : new THREE.MeshLambertMaterial({
-            color: new THREE.Color(data.color.r, data.color.g, data.color.b),
-            side: THREE.DoubleSide,
-            transparent: data.color.a < 1,
-            opacity: data.color.a,
-          });
+      const isTrans = data.space || data.color.a < 1;
+      const refs = this.byKey.get(data.key) ?? [];
 
-      const mesh = new THREE.Mesh(geometry, material);
-      mesh.userData.key = data.key;
-      mesh.userData.space = data.space;
-      this.baseMaterial.set(mesh, material);
-      if (data.space) {
-        mesh.renderOrder = 1; // draw after solids
-        // Outline the top face of each room so spaces are clearly separated.
-        const top = topFaceEdges(geometry);
-        if (top) {
-          const line = new THREE.LineSegments(top, this.spaceEdgeMaterial);
-          line.renderOrder = 2;
-          mesh.add(line); // child → inherits the space's visibility
+      if (!isTrans) {
+        const geoId = this.solids!.addGeometry(geometry);
+        const id = this.solids!.addInstance(geoId);
+        const c = new THREE.Color(data.color.r, data.color.g, data.color.b);
+        this.solids!.setColorAt(id, c);
+        this.solidColorCache[id] = c.getHex();
+        this.solidBase[id] = c;
+        this.solidKey[id] = data.key;
+        this.ghostSolid!.addInstance(this.ghostSolid!.addGeometry(ghostGeom(geometry)));
+        this.ghostSolid!.setVisibleAt(id, false);
+        refs.push({ batch: "solid", id, geoId });
+      } else {
+        const geoId = this.transparent!.addGeometry(geometry);
+        const id = this.transparent!.addInstance(geoId);
+        const v = data.space
+          ? new THREE.Vector4(SPACE_COLOR.r, SPACE_COLOR.g, SPACE_COLOR.b, 0.28)
+          : new THREE.Vector4(data.color.r, data.color.g, data.color.b, data.color.a);
+        this.transparent!.setColorAt(id, v);
+        const o = id * 4;
+        this.transColorCache[o] = v.x;
+        this.transColorCache[o + 1] = v.y;
+        this.transColorCache[o + 2] = v.z;
+        this.transColorCache[o + 3] = v.w;
+        this.transBase[id] = v;
+        this.transKey[id] = data.key;
+        this.transSpace[id] = data.space ? 1 : 0;
+        this.ghostTrans!.addInstance(this.ghostTrans!.addGeometry(ghostGeom(geometry)));
+        this.ghostTrans!.setVisibleAt(id, false);
+        refs.push({ batch: "trans", id, geoId });
+        if (data.space) {
+          // Outline the top face of each room so spaces are clearly separated.
+          const top = topFaceEdges(geometry);
+          if (top) {
+            const line = new THREE.LineSegments(top, this.spaceEdgeMaterial);
+            line.renderOrder = 2;
+            this.modelGroup.add(line);
+            const arr = this.spaceOutlines.get(data.key) ?? [];
+            arr.push(line);
+            this.spaceOutlines.set(data.key, arr);
+          }
         }
       }
-      this.modelGroup.add(mesh);
-
-      const list = this.byExpressID.get(data.key) ?? [];
-      list.push(mesh);
-      this.byExpressID.set(data.key, list);
+      this.byKey.set(data.key, refs);
     }
 
     this.groundToModel();
@@ -252,9 +357,7 @@ export class Viewer {
    */
   setSelection(ids: number[], color?: number): void {
     this.selection = new Set(ids);
-    const hex = color ?? HIGHLIGHT_COLOR.getHex();
-    this.highlightMaterial.color.setHex(hex);
-    this.highlightMaterial.emissive.setHex(hex);
+    this.highlightColor.setHex(color ?? HIGHLIGHT_COLOR.getHex());
     this.applyMaterials();
   }
 
@@ -266,9 +369,9 @@ export class Viewer {
 
   /**
    * Applies a resolved visibility snapshot (computed centrally in main from the
-   * VisState): `hidden` keys are not drawn, `ghost` keys are drawn translucent
-   * and locked (non-pickable context), everything else is visible. The current
-   * selection highlight is re-asserted on top. Does not move the camera.
+   * VisState): `hidden` keys are not drawn, `ghost` keys are drawn as gray,
+   * non-pickable context, everything else is visible. The current selection
+   * highlight is re-asserted on top. Does not move the camera.
    */
   render(hidden: Set<number>, ghost: Set<number>): void {
     this.lastHidden = hidden;
@@ -277,26 +380,65 @@ export class Viewer {
   }
 
   /**
-   * The single place that writes mesh.visible / mesh.material / userData.locked.
-   * Re-derives each mesh from the last resolved snapshot plus the selection, so
-   * it is idempotent and never leaves a stale swapped material behind.
+   * The single writer of per-instance visibility/colour. Re-derives every
+   * instance from the last resolved snapshot plus the selection, so it is
+   * idempotent (safe to re-run for undo/redo). Ghosted keys are shown only in
+   * the ghost batches (which are never raycast → structurally non-pickable).
    */
   private applyMaterials(): void {
-    for (const [key, meshes] of this.byExpressID) {
+    for (const [key, refs] of this.byKey) {
       const isHidden = this.lastHidden.has(key);
       const isGhost = !isHidden && this.lastGhost.has(key);
       const isSel = !isHidden && !isGhost && this.selection.has(key);
-      for (const mesh of meshes) {
-        mesh.visible = !isHidden;
-        mesh.userData.locked = isGhost;
-        mesh.material = isGhost
-          ? this.ghostMaterial
-          : isSel
-            ? this.highlightMaterial
-            : this.baseMaterial.get(mesh)!;
+      const shown = !isHidden && !isGhost;
+      for (const ref of refs) {
+        if (ref.batch === "solid") {
+          this.solids!.setVisibleAt(ref.id, shown);
+          this.ghostSolid!.setVisibleAt(ref.id, isGhost);
+          this.setSolidColor(ref.id, isSel ? this.highlightColor : this.solidBase[ref.id]);
+        } else {
+          this.transparent!.setVisibleAt(ref.id, shown);
+          this.ghostTrans!.setVisibleAt(ref.id, isGhost);
+          if (isSel) {
+            const base = this.transBase[ref.id];
+            this._scratchVec4.set(
+              this.highlightColor.r,
+              this.highlightColor.g,
+              this.highlightColor.b,
+              base.w,
+            );
+            this.setTransColor(ref.id, this._scratchVec4);
+          } else {
+            this.setTransColor(ref.id, this.transBase[ref.id]);
+          }
+        }
       }
+      // Outlines follow the space's visibility (stay shown while ghosted).
+      const lines = this.spaceOutlines.get(key);
+      if (lines) for (const l of lines) l.visible = !isHidden;
     }
     this.requestRender();
+  }
+
+  /** Cache-guarded per-instance colour writes (setColorAt re-uploads otherwise). */
+  private setSolidColor(id: number, c: THREE.Color): void {
+    const hex = c.getHex();
+    if (this.solidColorCache[id] === hex) return;
+    this.solidColorCache[id] = hex;
+    this.solids!.setColorAt(id, c);
+  }
+
+  private setTransColor(id: number, v: THREE.Vector4): void {
+    const o = id * 4;
+    const c = this.transColorCache;
+    if (c[o] === v.x && c[o + 1] === v.y && c[o + 2] === v.z && c[o + 3] === v.w) {
+      return;
+    }
+    c[o] = v.x;
+    c[o + 1] = v.y;
+    c[o + 2] = v.z;
+    c[o + 3] = v.w;
+    this.transparent!.setColorAt(id, v);
   }
 
   /** Fully clears the loaded model from the scene. */
@@ -305,18 +447,24 @@ export class Viewer {
     this.lastHidden.clear();
     this.lastGhost.clear();
 
-    for (const child of this.modelGroup.children) {
-      const m = child as THREE.Mesh;
-      m.geometry?.dispose();
-      // Dispose child outline lines (IfcSpace top-face edges).
-      for (const c of m.children) (c as THREE.LineSegments).geometry?.dispose();
+    for (const b of [this.solids, this.transparent, this.ghostSolid, this.ghostTrans]) {
+      b?.dispose(); // frees the batch's textures/geometry, NOT the shared material
     }
-    // Base materials are owned per mesh; the shared highlight / ghost materials
-    // persist across loads and must not be disposed here.
-    for (const mat of this.baseMaterial.values()) mat.dispose();
-    this.baseMaterial.clear();
+    for (const arr of this.spaceOutlines.values()) {
+      for (const l of arr) l.geometry.dispose();
+    }
     this.modelGroup.clear();
-    this.byExpressID.clear();
+
+    this.solids = this.transparent = this.ghostSolid = this.ghostTrans = null;
+    this.spaceOutlines.clear();
+    this.byKey.clear();
+    this.solidKey = [];
+    this.transKey = [];
+    this.solidBase = [];
+    this.transBase = [];
+    this.transSpace = new Uint8Array(0);
+    this.solidColorCache = new Int32Array(0);
+    this.transColorCache = new Float32Array(0);
   }
 
   // ── Internal ─────────────────────────────────────────────────────────────────
@@ -341,9 +489,11 @@ export class Viewer {
 
   /**
    * Ray-picks the element under a screen position against the current camera.
-   * Returns the composite element key, or null for empty space. Hidden and
-   * ghosted (locked) meshes are skipped; when IfcSpace rooms are shown they are
-   * preferred (they sit behind walls) unless `preferSpace` is false (Alt-click).
+   * Returns the composite element key, or null for empty space. Only the two
+   * real batches are tested — hidden instances are auto-excluded and ghost
+   * batches are never raycast, so ghosted context is non-pickable. When IfcSpace
+   * rooms are shown they are preferred (they sit behind walls) unless
+   * `preferSpace` is false (Alt-click), which falls through to the solid behind.
    */
   private pickAt(
     clientX: number,
@@ -355,33 +505,38 @@ export class Viewer {
     this.pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1;
     this.raycaster.setFromCamera(this.pointer, this.camera);
 
-    const hits = this.raycaster.intersectObjects(this.modelGroup.children, false);
-    const visible = hits.filter(
-      (h) => h.object.visible && !h.object.userData.locked,
-    );
-    const space = preferSpace
-      ? visible.find((h) => h.object.userData.space)
-      : undefined;
-    const hit = space ?? visible[0];
-    return hit ? (hit.object.userData.key as number) : null;
+    const batches = [this.solids, this.transparent].filter(
+      Boolean,
+    ) as THREE.BatchedMesh[];
+    const hits = this.raycaster.intersectObjects(batches, false);
+    if (hits.length === 0) return null;
+
+    const keyOf = (h: THREE.Intersection): number =>
+      h.object === this.solids
+        ? this.solidKey[h.batchId as number]
+        : this.transKey[h.batchId as number];
+    const isSpaceHit = (h: THREE.Intersection): boolean =>
+      h.object === this.transparent && this.transSpace[h.batchId as number] === 1;
+
+    const space = preferSpace ? hits.find(isSpaceHit) : undefined;
+    const hit = space ?? hits[0];
+    return hit ? keyOf(hit) : null;
   }
 
   /** Frames the camera on a specific set of elements (by scene key). Zooms in
-   *  without touching scope/hidden, so it never resets an active isolation. */
+   *  without touching visibility, so it never resets an active isolation. */
   fitTo(keys: number[]): void {
-    const box = new THREE.Box3();
-    const meshBox = new THREE.Box3();
+    this._box.makeEmpty();
     for (const key of keys) {
-      for (const mesh of this.byExpressID.get(key) ?? []) {
-        if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
-        if (mesh.geometry.boundingBox) {
-          box.union(meshBox.copy(mesh.geometry.boundingBox));
-        }
+      for (const ref of this.byKey.get(key) ?? []) {
+        const b = ref.batch === "solid" ? this.solids : this.transparent;
+        if (!b) continue;
+        if (b.getBoundingBoxAt(ref.geoId, this._meshBox)) this._box.union(this._meshBox);
       }
     }
-    if (box.isEmpty()) return;
-    const size = box.getSize(new THREE.Vector3());
-    const center = box.getCenter(new THREE.Vector3());
+    if (this._box.isEmpty()) return;
+    const size = this._box.getSize(new THREE.Vector3());
+    const center = this._box.getCenter(new THREE.Vector3());
     const maxDim = Math.max(size.x, size.y, size.z) || 1;
 
     this.controls.target.copy(center);
@@ -394,18 +549,9 @@ export class Viewer {
     this.requestRender();
   }
 
-  /** Frames the camera on the currently visible meshes (respects scope). */
+  /** Frames the camera on the whole model (called at load, all instances shown). */
   private fitToVisible(): void {
-    const box = new THREE.Box3();
-    const meshBox = new THREE.Box3();
-    for (const child of this.modelGroup.children) {
-      const mesh = child as THREE.Mesh;
-      if (!mesh.visible) continue;
-      // modelGroup and meshes carry no transform (coords baked into vertices),
-      // so the geometry bounding box already is the world box.
-      if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
-      if (mesh.geometry.boundingBox) box.union(meshBox.copy(mesh.geometry.boundingBox));
-    }
+    const box = this.modelBounds(this._box);
     if (box.isEmpty()) return;
     const size = box.getSize(new THREE.Vector3());
     const center = box.getCenter(new THREE.Vector3());
@@ -463,6 +609,14 @@ export class Viewer {
       false,
     );
   }
+}
+
+/** A position+index-only copy for a ghost twin (no normals — unlit material). */
+function ghostGeom(src: THREE.BufferGeometry): THREE.BufferGeometry {
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", src.getAttribute("position"));
+  g.setIndex(src.getIndex());
+  return g;
 }
 
 /**
