@@ -54,5 +54,5 @@ export async function loadConfig(): Promise<ViewerConfig> {
 
 /** The resolved backend origin. Call only after `loadConfig()` has completed. */
 export function apiBase(): string {
-  return resolved?.apiBase ?? "";
+  return "/api"//resolved?.apiBase ?? "";
 }
