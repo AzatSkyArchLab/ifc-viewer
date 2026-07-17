@@ -57,7 +57,7 @@ CORS: the backend must allow the viewer's origin (or serve the viewer itself).
 
 ## Configuration
 
-The backend origin (`apiBase`) is resolved once at startup, in priority order:
+The backend address (`apiBase`) is resolved once at startup, in priority order:
 
 1. `window.__IFC_VIEWER_CONFIG__ = { apiBase: "…" }` — injected by a host page.
 2. **`config.json`** next to `index.html` — copy `config.example.json` to
@@ -72,7 +72,9 @@ The backend origin (`apiBase`) is resolved once at startup, in priority order:
    when no `config.json` is present (handy for `npm run dev`).
 4. same-origin (`""`) as the final fallback.
 
-`apiBase` is an **origin only** — no trailing slash, no endpoint path.
+`apiBase` is an **origin** (`https://api.example.com`) or a **path prefix**
+(`/api`, when a proxy fronts the backend under one) — no trailing slash, no
+endpoint path.
 
 ## Develop
 
