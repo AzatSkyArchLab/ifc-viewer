@@ -340,6 +340,13 @@ function isAbort(err: unknown): boolean {
 const HEAVY_3D_BYTES = 700 * 1024 * 1024;
 
 /**
+ * Below this size, an abort is retried once with COORDINATE_TO_ORIGIN (the
+ * likely cause is far-from-origin geometry, which that fixes). Above it, an
+ * abort is the 4 GB memory ceiling — no point re-parsing to fail again.
+ */
+const RETRY_BYTES = 120 * 1024 * 1024;
+
+/**
  * Loads and displays one or more IFC files. `safe` re-runs with
  * COORDINATE_TO_ORIGIN after a first-attempt abort (the common cause is a
  * georeferenced model whose far-from-origin coordinates overflow web-ifc's
@@ -426,37 +433,47 @@ async function openFiles(files: File[], safe = false): Promise<void> {
     setStatus(`${label} · элементов: ${elements.length}`);
   } catch (err) {
     console.error("Загрузка IFC не удалась:", err);
-    // A first-attempt abort is usually far-from-origin geometry — rebuild the
-    // (now-dead) WASM module and retry once translated to the origin.
-    if (!safe && isAbort(err)) {
+    // A moderate-sized abort is usually far-from-origin geometry — rebuild the
+    // (now-dead) worker and retry once translated to the origin. Skip the retry
+    // for big files: there the abort is the 4 GB WASM ceiling, and re-parsing
+    // hundreds of MB just to fail again wastes a minute.
+    if (!safe && isAbort(err) && totalBytes < RETRY_BYTES) {
       console.warn("web-ifc прервал обработку — повтор в безопасном режиме (COORDINATE_TO_ORIGIN).");
       await parser.recover();
       setLoading(false);
       return openFiles(files, true);
     }
     await parser.recover(); // rebuild so the next load works without a page reload
-    setStatus(
-      isAbort(err)
-        ? "Не удалось разобрать файл: web-ifc прервал обработку (повреждённая или неподдерживаемая геометрия, либо слишком большой файл). Подробности в консоли (F12)."
-        : `Ошибка загрузки: ${(err as Error).message}`,
-    );
+    if (isAbort(err)) {
+      // Can't render in the browser (too big for 4 GB WASM, or bad geometry) —
+      // fall back to checks-only so the file is still usable. The checks run on
+      // the backend, which handles a 300 MB model natively.
+      checksOnly(
+        files,
+        `Не удалось отрисовать модель ${totalMB} МБ в браузере (предел памяти ` +
+          "~4 ГБ). Проверки доступны — откройте панель «Проверки». Для 3D " +
+          "используйте настольный просмотрщик.",
+        `${files[0]?.name ?? "модель"} · только проверки`,
+      );
+    } else {
+      setStatus(`Ошибка загрузки: ${(err as Error).message}`);
+    }
   } finally {
     setLoading(false);
   }
 }
 
 /**
- * Loads a zip archive for checks only. Its .ifc are unpacked and validated on
- * the backend, but the browser viewer can't render an archive, so the scene is
- * cleared and a notice replaces the 3D view. Checks run exactly as for files.
+ * Sets the app up to run checks on `files` without a browser 3D view: the scene
+ * and side panels are cleared, a notice explains why, and the files are kept so
+ * the checks (which run on the backend) still work. Used for zip archives and
+ * as the fallback when a model is too big for the browser to render.
  */
-function openArchive(archives: File[]): void {
-  if (archives.length === 0) return;
+function checksOnly(files: File[], notice: string, status: string): void {
   parser.clearAll();
-  loadedModels = archives.map((file) => ({ file, modelId: -1 }));
-  loadedNames = archives.map((f) => f.name.replace(/\.zip$/i, "").trim());
+  loadedModels = files.map((file) => ({ file, modelId: -1 }));
+  loadedNames = files.map((f) => f.name.replace(/\.(ifc|zip)$/i, "").trim());
 
-  // Empty scene + empty side panels — there is no geometry to show.
   viewer.loadMeshes([]);
   typeByKey = new Map();
   allKeys = [];
@@ -474,13 +491,19 @@ function openArchive(archives: File[]): void {
   setSelection([]);
   props.clear();
   updateViewButton();
+  setNotice(notice);
+  setStatus(status);
+}
 
+function openArchive(archives: File[]): void {
+  if (archives.length === 0) return;
   const label =
     archives.length === 1 ? archives[0].name : `архивов: ${archives.length}`;
-  setNotice(
+  checksOnly(
+    archives,
     "Визуализация ZIP-архива недоступна. Проверки доступны — откройте панель «Проверки».",
+    `${label} · архив, только проверки`,
   );
-  setStatus(`${label} · архив, только проверки`);
 }
 
 /** Routes a dropped/selected set: .ifc → visualise; .zip → checks-only. */

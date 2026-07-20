@@ -414,7 +414,14 @@ ctx.onmessage = async (event: MessageEvent<Msg>): Promise<void> => {
     switch (msg.cmd) {
       case "open": {
         await init(msg.wasmBase ?? "/");
-        const model = open(new Uint8Array(msg.data!), msg.name!, !!msg.coordinateToOrigin);
+        const bytes = new Uint8Array(msg.data!);
+        // Guard against a non-IFC or truncated upload: without this web-ifc
+        // fails deep in OpenModel with an opaque "reading 'arguments'".
+        const head = String.fromCharCode(...bytes.slice(0, 16));
+        if (bytes.byteLength < 20 || !head.includes("ISO-10303")) {
+          throw new Error("файл не похож на IFC (нет заголовка ISO-10303-21)");
+        }
+        const model = open(bytes, msg.name!, !!msg.coordinateToOrigin);
         ctx.postMessage({ id: msg.id, ok: true, result: { model, models } });
         break;
       }
@@ -443,7 +450,7 @@ ctx.onmessage = async (event: MessageEvent<Msg>): Promise<void> => {
     ctx.postMessage({
       id: msg.id,
       ok: false,
-      message: (err as Error)?.message ?? String(err),
+      message: `[${msg.cmd}] ${(err as Error)?.message ?? String(err)}`,
     });
   }
 };
