@@ -37,9 +37,62 @@ export interface IfcIdsFileResult {
 const CHECKS_PATH = "/ifc_ids_validation";
 
 /**
- * Uploads the IFC files in ONE request and returns per-file check results
- * (same order as `files`). A single batch lets the backend run cross-file
- * checks (IFC-21/22) over the whole set.
+ * The backend sends a slim shape — id, name, description, passed — with the
+ * per-element data packed into `description` after this marker. The head is the
+ * human text, the tail is a JSON payload with counts, scope, report, elements.
+ * Keep this in sync with CHECK_DATA_MARKER in app/dto/ifc_ids_validation.py.
+ */
+const CHECK_DATA_MARKER = "⟦AGR⟧";
+
+interface SlimCheck {
+  id: string;
+  name: string;
+  description: string;
+  passed: boolean;
+}
+
+interface SlimFileResult {
+  filename: string;
+  checks: SlimCheck[];
+}
+
+interface PackedData {
+  counts?: Record<string, number>;
+  scope?: "file" | "batch";
+  report?: boolean;
+  elements?: IfcElementRef[];
+}
+
+/** Splits `description` into its human head and the packed data (if present). */
+function unpackCheck(slim: SlimCheck): IfcCheckResult {
+  const at = slim.description.indexOf(CHECK_DATA_MARKER);
+  let description = slim.description;
+  let data: PackedData = {};
+  if (at >= 0) {
+    description = slim.description.slice(0, at).replace(/\s+$/, "");
+    try {
+      data = JSON.parse(slim.description.slice(at + CHECK_DATA_MARKER.length));
+    } catch {
+      data = {};
+    }
+  }
+  return {
+    id: slim.id,
+    name: slim.name,
+    description,
+    passed: slim.passed,
+    counts: data.counts ?? {},
+    elements: data.elements ?? [],
+    scope: data.scope ?? "file",
+    report: data.report ?? false,
+  };
+}
+
+/**
+ * Uploads the IFC files (or a .zip of them) in ONE request and returns per-file
+ * check results (same order as `files`). A single batch lets the backend run
+ * cross-file checks (IFC-21/22) over the whole set. The slim wire shape is
+ * unpacked back into the full result the UI works with.
  */
 export async function runIfcIdsChecks(
   files: File[],
@@ -56,7 +109,11 @@ export async function runIfcIdsChecks(
     const text = await res.text().catch(() => "");
     throw new Error(`${res.status} ${text}`.slice(0, 200));
   }
-  return res.json();
+  const slim = (await res.json()) as SlimFileResult[];
+  return slim.map((file) => ({
+    filename: file.filename,
+    checks: (file.checks ?? []).map(unpackCheck),
+  }));
 }
 
 /** Metadata of one check (GET /ifc_ids_validation/checks). */
