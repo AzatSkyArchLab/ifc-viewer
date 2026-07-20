@@ -68,11 +68,19 @@ const btnUndo = byId<HTMLButtonElement>("btn-undo");
 const btnRedo = byId<HTMLButtonElement>("btn-redo");
 const loadingEl = byId("loading");
 const loadingTextEl = byId("loading-text");
+const noticeEl = byId("viewer-notice");
+const noticeTextEl = byId("viewer-notice-text");
 
 /** Shows / hides the blocking spinner shown while an IFC is parsed. */
 function setLoading(on: boolean, text?: string): void {
   if (text) loadingTextEl.textContent = text;
   loadingEl.hidden = !on;
+}
+
+/** A static notice over the empty viewport (e.g. a zip can't be visualised). */
+function setNotice(text: string | null): void {
+  if (text) noticeTextEl.textContent = text;
+  noticeEl.hidden = !text;
 }
 
 /**
@@ -277,6 +285,7 @@ async function openTrm(file: File): Promise<void> {
 
 async function openFiles(files: File[]): Promise<void> {
   if (files.length === 0) return;
+  setNotice(null);
   setStatus(`Загрузка ${files.length} файл(ов)…`);
   setLoading(true, "Загрузка IFC…");
   await painted();
@@ -329,6 +338,52 @@ async function openFiles(files: File[]): Promise<void> {
   } finally {
     setLoading(false);
   }
+}
+
+/**
+ * Loads a zip archive for checks only. Its .ifc are unpacked and validated on
+ * the backend, but the browser viewer can't render an archive, so the scene is
+ * cleared and a notice replaces the 3D view. Checks run exactly as for files.
+ */
+function openArchive(archives: File[]): void {
+  if (archives.length === 0) return;
+  parser.clearAll();
+  loadedModels = archives.map((file) => ({ file, modelId: -1 }));
+  loadedNames = archives.map((f) => f.name.replace(/\.zip$/i, "").trim());
+
+  // Empty scene + empty side panels — there is no geometry to show.
+  viewer.loadMeshes(parser.getMeshes());
+  typeByKey = new Map();
+  allKeys = [];
+  idx = buildStoreyIndex([]);
+  vis = emptyState();
+  history.clear();
+  tree.setData(parser.getModels(), [], []);
+  seeding = true;
+  list.setElements([]);
+  seeding = false;
+
+  checks.setEnabled(true);
+  applyVis();
+  setSelection([]);
+  props.clear();
+  updateViewButton();
+
+  const label =
+    archives.length === 1 ? archives[0].name : `архивов: ${archives.length}`;
+  setNotice(
+    "Визуализация ZIP-архива недоступна. Проверки доступны — откройте панель «Проверки».",
+  );
+  setStatus(`${label} · архив, только проверки`);
+}
+
+/** Routes a dropped/selected set: .ifc → visualise; .zip → checks-only. */
+function openDropped(files: File[]): void {
+  const ifc = files.filter((f) => /\.ifc$/i.test(f.name));
+  const zip = files.filter((f) => /\.zip$/i.test(f.name));
+  if (ifc.length) void openFiles(ifc);
+  else if (zip.length) openArchive(zip);
+  else if (files[0]) void openTrm(files[0]);
 }
 
 // ── Wiring ─────────────────────────────────────────────────────────────────
@@ -404,7 +459,7 @@ tree.onFocus((modelId, storeyKey) =>
 
 fileInput.addEventListener("change", () => {
   const files = [...(fileInput.files ?? [])];
-  if (files.length) void openFiles(files);
+  if (files.length) openDropped(files);
   fileInput.value = ""; // allow re-opening the same file
 });
 
@@ -414,7 +469,8 @@ trmInput.addEventListener("change", () => {
   trmInput.value = "";
 });
 
-// Drag & drop: several .ifc → merged models; a single other file → TRM.
+// Drag & drop: several .ifc → merged models; a .zip → checks-only;
+// a single other file → TRM.
 const appEl = byId("app");
 appEl.addEventListener("dragover", (e) => {
   e.preventDefault();
@@ -426,10 +482,7 @@ appEl.addEventListener("dragleave", (e) => {
 appEl.addEventListener("drop", (e) => {
   e.preventDefault();
   appEl.classList.remove("dragover");
-  const files = [...(e.dataTransfer?.files ?? [])];
-  const ifc = files.filter((f) => f.name.toLowerCase().endsWith(".ifc"));
-  if (ifc.length) void openFiles(ifc);
-  else if (files[0]) void openTrm(files[0]);
+  openDropped([...(e.dataTransfer?.files ?? [])]);
 });
 
 filterInput.addEventListener("input", () => list.setFilter(filterInput.value));

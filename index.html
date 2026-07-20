@@ -28,7 +28,7 @@
           </label>
           <label class="btn btn-primary">
             Открыть IFC
-            <input id="file-input" type="file" accept=".ifc" multiple hidden />
+            <input id="file-input" type="file" accept=".ifc,.zip" multiple hidden />
           </label>
         </div>
       </header>
@@ -72,6 +72,9 @@
           <div id="loading" class="loading" hidden>
             <span class="loading-spinner" aria-hidden="true"></span>
             <span id="loading-text" class="loading-text">Загрузка IFC…</span>
+          </div>
+          <div id="viewer-notice" class="viewer-notice" hidden>
+            <span id="viewer-notice-text" class="viewer-notice-text"></span>
           </div>
         </section>
       </main>

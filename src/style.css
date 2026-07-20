@@ -242,6 +242,33 @@ body {
   color: var(--text-soft);
 }
 
+/* Static notice over the empty viewport (e.g. a zip can't be visualised). */
+.viewer-notice {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  pointer-events: none;
+}
+.viewer-notice[hidden] {
+  display: none;
+}
+.viewer-notice-text {
+  max-width: 360px;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--text-soft);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px 20px;
+}
+
 /* Perf overlay (FPS / draw calls / triangles); toggle with the ` key or ?stats. */
 .viewer-stats {
   position: absolute;
