@@ -1,6 +1,7 @@
 import "./style.css";
 import { loadConfig } from "./core/config.ts";
 import { IfcParser } from "./core/ifc-parser.ts";
+import type { IfcStorey } from "./core/types.ts";
 import { Viewer } from "./viewer/viewer.ts";
 import { ElementList } from "./ui/element-list.ts";
 import { PropertiesPanel } from "./ui/properties-panel.ts";
@@ -115,6 +116,8 @@ let loadedNames: string[] = [];
 let vis: VisState = emptyState();
 let idx: StoreyIndex = buildStoreyIndex([]);
 let typeByKey = new Map<number, string>();
+/** Storey key → storey, to name the level an element sits on (props panel). */
+let storeyByKey = new Map<number, IfcStorey>();
 let allKeys: number[] = [];
 const history = new History<VisState>(cloneState, 50);
 /** True while seeding the initial default type-hides (IfcSpace) — no history. */
@@ -227,9 +230,29 @@ function setStatus(text: string): void {
   statusEl.textContent = text;
 }
 
+/**
+ * The storey an element sits on. The link is the IFC spatial containment
+ * (IfcRelContainedInSpatialStructure → IfcBuildingStorey), resolved once per
+ * load into `idx`; there is no per-element attribute for it. Null when the
+ * element is not directly contained in a storey (site, or a hosted sub-element).
+ */
+function levelLabel(key: number): string | null {
+  const storeyKey = idx.elemStorey.get(key);
+  if (storeyKey == null) return null;
+  const storey = storeyByKey.get(storeyKey);
+  if (!storey) return null;
+  const parts: string[] = [];
+  if (storey.name) parts.push(storey.name);
+  if (storey.elevation != null) {
+    const e = storey.elevation;
+    parts.push(`отм. ${Number.isInteger(e) ? e : e.toFixed(3).replace(/\.?0+$/, "")}`);
+  }
+  return parts.length ? parts.join(" · ") : null;
+}
+
 async function showProps(key: number, expandAll = false): Promise<void> {
   try {
-    props.show(await parser.getElementInfo(key), expandAll);
+    props.show(await parser.getElementInfo(key), expandAll, levelLabel(key));
   } catch (err) {
     console.error(err);
   }
@@ -308,6 +331,7 @@ async function openFiles(files: File[]): Promise<void> {
 
     const elements = parser.getElements();
     const storeys = parser.getStoreys();
+    storeyByKey = new Map(storeys.map((s) => [s.key, s]));
     // Load meshes first so the list's initial layer-hides (IfcSpace) apply.
     viewer.loadMeshes(parser.getMeshes());
 
@@ -355,6 +379,7 @@ function openArchive(archives: File[]): void {
   viewer.loadMeshes(parser.getMeshes());
   typeByKey = new Map();
   allKeys = [];
+  storeyByKey = new Map();
   idx = buildStoreyIndex([]);
   vis = emptyState();
   history.clear();

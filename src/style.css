@@ -1451,6 +1451,13 @@ body {
   word-break: break-all;
 }
 
+.props-level {
+  color: var(--text-soft);
+  font-size: 12px;
+  font-weight: 500;
+  margin-top: 4px;
+}
+
 .pset {
   margin: 4px 0;
   border: 1px solid var(--border);

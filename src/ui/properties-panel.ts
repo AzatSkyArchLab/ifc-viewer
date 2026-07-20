@@ -13,7 +13,7 @@ export class PropertiesPanel {
     this.root.innerHTML = `<div class="props-empty">Выберите элемент в списке или в 3D-сцене</div>`;
   }
 
-  show(info: IfcElementInfo, expandAll = false): void {
+  show(info: IfcElementInfo, expandAll = false, level: string | null = null): void {
     this.root.innerHTML = "";
 
     const header = document.createElement("div");
@@ -25,6 +25,11 @@ export class PropertiesPanel {
       ${
         info.element.globalId
           ? `<div class="props-guid">GUID: ${escapeHtml(info.element.globalId)}</div>`
+          : ""
+      }
+      ${
+        level
+          ? `<div class="props-level">Уровень: ${escapeHtml(level)}</div>`
           : ""
       }
     `;
