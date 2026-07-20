@@ -331,13 +331,13 @@ function isAbort(err: unknown): boolean {
 }
 
 /**
- * Above this upload size the browser's 3D is skipped: web-ifc runs in 32-bit
- * WASM (~4 GB ceiling) and tessellating a huge model overflows memory or
- * freezes the tab. The lighter parse (list, tree, storeys) and the checks
- * (which run on the backend) still work; 3D of such a model belongs in a native
- * desktop viewer. Tunable.
+ * Above this upload size the browser's 3D is skipped. Parsing and geometry run
+ * in a worker (its own ~4 GB, and the tab never freezes), so this can be far
+ * higher than a main-thread limit — only genuinely huge models that would
+ * exhaust even the worker's 4 GB fall back to list/tree/checks without 3D.
+ * Tunable.
  */
-const HEAVY_3D_BYTES = 150 * 1024 * 1024;
+const HEAVY_3D_BYTES = 700 * 1024 * 1024;
 
 /**
  * Loads and displays one or more IFC files. `safe` re-runs with
@@ -375,13 +375,13 @@ async function openFiles(files: File[], safe = false): Promise<void> {
     }
     console.info(`[viewer] разбор ${totalMB} МБ: ${Math.round(performance.now() - tParse)} мс`);
 
-    const elements = parser.getElements();
-    const storeys = parser.getStoreys();
+    const elements = await parser.getElements();
+    const storeys = await parser.getStoreys();
     storeyByKey = new Map(storeys.map((s) => [s.key, s]));
 
     if (heavy) {
-      // Too large for the browser's WASM/WebGL — skip 3D tessellation, the part
-      // that overflows memory or freezes the tab. List, tree and checks stay.
+      // Beyond even the worker's ~4 GB — skip 3D tessellation. List, tree and
+      // checks stay; 3D of a model this size belongs in a desktop viewer.
       viewer.loadMeshes([]);
       setNotice(
         `Модель ${totalMB} МБ — трёхмерный вид в браузере пропущен, чтобы не ` +
@@ -390,11 +390,15 @@ async function openFiles(files: File[], safe = false): Promise<void> {
       );
     } else {
       setLoading(true, "Построение геометрии…");
-      setProgress(null);
+      setProgress(0);
       await painted();
       const tGeom = performance.now();
-      // Load meshes first so the list's initial layer-hides (IfcSpace) apply.
-      viewer.loadMeshes(parser.getMeshes());
+      // Geometry runs in the worker; progress paints because the main thread is
+      // free. Load meshes first so the list's initial layer-hides (IfcSpace) apply.
+      const meshes = await parser.getMeshes((done, total) =>
+        setProgress(total > 0 ? done / total : null),
+      );
+      viewer.loadMeshes(meshes);
       console.info(`[viewer] геометрия: ${Math.round(performance.now() - tGeom)} мс`);
     }
 
@@ -453,7 +457,7 @@ function openArchive(archives: File[]): void {
   loadedNames = archives.map((f) => f.name.replace(/\.zip$/i, "").trim());
 
   // Empty scene + empty side panels — there is no geometry to show.
-  viewer.loadMeshes(parser.getMeshes());
+  viewer.loadMeshes([]);
   typeByKey = new Map();
   allKeys = [];
   storeyByKey = new Map();
