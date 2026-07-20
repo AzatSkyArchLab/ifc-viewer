@@ -331,6 +331,15 @@ function isAbort(err: unknown): boolean {
 }
 
 /**
+ * Above this upload size the browser's 3D is skipped: web-ifc runs in 32-bit
+ * WASM (~4 GB ceiling) and tessellating a huge model overflows memory or
+ * freezes the tab. The lighter parse (list, tree, storeys) and the checks
+ * (which run on the backend) still work; 3D of such a model belongs in a native
+ * desktop viewer. Tunable.
+ */
+const HEAVY_3D_BYTES = 150 * 1024 * 1024;
+
+/**
  * Loads and displays one or more IFC files. `safe` re-runs with
  * COORDINATE_TO_ORIGIN after a first-attempt abort (the common cause is a
  * georeferenced model whose far-from-origin coordinates overflow web-ifc's
@@ -340,6 +349,9 @@ function isAbort(err: unknown): boolean {
 async function openFiles(files: File[], safe = false): Promise<void> {
   if (files.length === 0) return;
   const multi = files.length > 1;
+  const totalBytes = files.reduce((sum, f) => sum + f.size, 0);
+  const totalMB = Math.round(totalBytes / (1024 * 1024));
+  const heavy = totalBytes > HEAVY_3D_BYTES;
   setNotice(null);
   setStatus(`Загрузка ${files.length} файл(ов)…`);
   setLoading(true, safe ? "Повторная загрузка (безопасный режим)…" : "Загрузка IFC…");
@@ -349,6 +361,7 @@ async function openFiles(files: File[], safe = false): Promise<void> {
     parser.clearAll();
     loadedModels = [];
     loadedNames = [];
+    const tParse = performance.now();
     for (const [i, file] of files.entries()) {
       setLoading(true, multi ? `Разбор ${i + 1}/${files.length}: ${file.name}` : `Разбор ${file.name}…`);
       if (multi) setProgress(i / files.length);
@@ -360,16 +373,30 @@ async function openFiles(files: File[], safe = false): Promise<void> {
         file.name.replace(/\.ifc$/i, "").replace(/\s*\(\d+\)\s*$/, "").trim(),
       );
     }
-
-    setLoading(true, "Построение геометрии…");
-    setProgress(null);
-    await painted();
+    console.info(`[viewer] разбор ${totalMB} МБ: ${Math.round(performance.now() - tParse)} мс`);
 
     const elements = parser.getElements();
     const storeys = parser.getStoreys();
     storeyByKey = new Map(storeys.map((s) => [s.key, s]));
-    // Load meshes first so the list's initial layer-hides (IfcSpace) apply.
-    viewer.loadMeshes(parser.getMeshes());
+
+    if (heavy) {
+      // Too large for the browser's WASM/WebGL — skip 3D tessellation, the part
+      // that overflows memory or freezes the tab. List, tree and checks stay.
+      viewer.loadMeshes([]);
+      setNotice(
+        `Модель ${totalMB} МБ — трёхмерный вид в браузере пропущен, чтобы не ` +
+          "переполнить память. Список, дерево и проверки доступны. Для 3D " +
+          "используйте настольный просмотрщик.",
+      );
+    } else {
+      setLoading(true, "Построение геометрии…");
+      setProgress(null);
+      await painted();
+      const tGeom = performance.now();
+      // Load meshes first so the list's initial layer-hides (IfcSpace) apply.
+      viewer.loadMeshes(parser.getMeshes());
+      console.info(`[viewer] геометрия: ${Math.round(performance.now() - tGeom)} мс`);
+    }
 
     // Rebuild the central visibility model for this load.
     typeByKey = new Map(elements.map((e) => [e.key, e.typeName]));

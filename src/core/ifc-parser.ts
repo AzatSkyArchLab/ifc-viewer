@@ -50,6 +50,8 @@ export class IfcParser {
    * `coordinateToOrigin` translates far-from-origin geometry (georeferenced /
    * МСК models) back to the origin — without it web-ifc's tessellation can hit
    * float-precision limits and call abort(); used on the safe-mode retry.
+   * MEMORY_LIMIT is raised above web-ifc's 2 GB default so larger models fit
+   * before the 32-bit WASM ceiling (~4 GB) is reached.
    */
   async add(
     data: Uint8Array,
@@ -57,9 +59,12 @@ export class IfcParser {
     opts: { coordinateToOrigin?: boolean } = {},
   ): Promise<number> {
     await this.init();
-    const modelId = opts.coordinateToOrigin
-      ? this.api.OpenModel(data, { COORDINATE_TO_ORIGIN: true })
-      : this.api.OpenModel(data);
+    const settings: {
+      MEMORY_LIMIT: number;
+      COORDINATE_TO_ORIGIN?: boolean;
+    } = { MEMORY_LIMIT: 3_000_000_000 };
+    if (opts.coordinateToOrigin) settings.COORDINATE_TO_ORIGIN = true;
+    const modelId = this.api.OpenModel(data, settings);
     this.models.push({ modelId, name });
     return modelId;
   }
