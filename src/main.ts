@@ -69,13 +69,32 @@ const btnUndo = byId<HTMLButtonElement>("btn-undo");
 const btnRedo = byId<HTMLButtonElement>("btn-redo");
 const loadingEl = byId("loading");
 const loadingTextEl = byId("loading-text");
+const loadingBarEl = byId("loading-bar");
+const loadingBarFillEl = byId("loading-bar-fill");
 const noticeEl = byId("viewer-notice");
 const noticeTextEl = byId("viewer-notice-text");
 
-/** Shows / hides the blocking spinner shown while an IFC is parsed. */
+/** Shows / hides the blocking overlay shown while an IFC is parsed. */
 function setLoading(on: boolean, text?: string): void {
   if (text) loadingTextEl.textContent = text;
   loadingEl.hidden = !on;
+  if (!on) setProgress(null);
+}
+
+/**
+ * Drives the progress bar. A number 0..1 fills it (determinate — used per file
+ * in a multi-file load); `null` makes it indeterminate (a sliding animation
+ * that keeps moving even while web-ifc blocks the main thread, since it runs on
+ * the compositor).
+ */
+function setProgress(fraction: number | null): void {
+  if (fraction == null) {
+    loadingBarEl.classList.add("indeterminate");
+    loadingBarFillEl.style.width = "";
+  } else {
+    loadingBarEl.classList.remove("indeterminate");
+    loadingBarFillEl.style.width = `${Math.round(Math.min(1, Math.max(0, fraction)) * 100)}%`;
+  }
 }
 
 /** A static notice over the empty viewport (e.g. a zip can't be visualised). */
@@ -306,28 +325,45 @@ async function openTrm(file: File): Promise<void> {
   }
 }
 
-async function openFiles(files: File[]): Promise<void> {
+/** A web-ifc WASM abort — the module is dead and must be rebuilt to recover. */
+function isAbort(err: unknown): boolean {
+  return /abort/i.test((err as Error)?.message ?? "");
+}
+
+/**
+ * Loads and displays one or more IFC files. `safe` re-runs with
+ * COORDINATE_TO_ORIGIN after a first-attempt abort (the common cause is a
+ * georeferenced model whose far-from-origin coordinates overflow web-ifc's
+ * tessellation). A progress bar tracks parsing: determinate per file for a
+ * multi-file load, indeterminate (animated) for a single file.
+ */
+async function openFiles(files: File[], safe = false): Promise<void> {
   if (files.length === 0) return;
+  const multi = files.length > 1;
   setNotice(null);
   setStatus(`Загрузка ${files.length} файл(ов)…`);
-  setLoading(true, "Загрузка IFC…");
+  setLoading(true, safe ? "Повторная загрузка (безопасный режим)…" : "Загрузка IFC…");
+  setProgress(multi ? 0 : null);
   await painted();
   try {
     parser.clearAll();
     loadedModels = [];
     loadedNames = [];
     for (const [i, file] of files.entries()) {
-      if (files.length > 1) {
-        setLoading(true, `Загрузка IFC… ${i + 1}/${files.length}`);
-        await painted();
-      }
+      setLoading(true, multi ? `Разбор ${i + 1}/${files.length}: ${file.name}` : `Разбор ${file.name}…`);
+      if (multi) setProgress(i / files.length);
+      await painted();
       const data = new Uint8Array(await file.arrayBuffer());
-      const modelId = await parser.add(data, file.name);
+      const modelId = await parser.add(data, file.name, { coordinateToOrigin: safe });
       loadedModels.push({ file, modelId });
       loadedNames.push(
         file.name.replace(/\.ifc$/i, "").replace(/\s*\(\d+\)\s*$/, "").trim(),
       );
     }
+
+    setLoading(true, "Построение геометрии…");
+    setProgress(null);
+    await painted();
 
     const elements = parser.getElements();
     const storeys = parser.getStoreys();
@@ -355,10 +391,24 @@ async function openFiles(files: File[]): Promise<void> {
     props.clear();
     updateViewButton();
     const label = files.length === 1 ? files[0].name : `моделей: ${files.length}`;
+    setProgress(1);
     setStatus(`${label} · элементов: ${elements.length}`);
   } catch (err) {
-    console.error(err);
-    setStatus(`Ошибка загрузки: ${(err as Error).message}`);
+    console.error("Загрузка IFC не удалась:", err);
+    // A first-attempt abort is usually far-from-origin geometry — rebuild the
+    // (now-dead) WASM module and retry once translated to the origin.
+    if (!safe && isAbort(err)) {
+      console.warn("web-ifc прервал обработку — повтор в безопасном режиме (COORDINATE_TO_ORIGIN).");
+      await parser.recover();
+      setLoading(false);
+      return openFiles(files, true);
+    }
+    await parser.recover(); // rebuild so the next load works without a page reload
+    setStatus(
+      isAbort(err)
+        ? "Не удалось разобрать файл: web-ifc прервал обработку (повреждённая или неподдерживаемая геометрия, либо слишком большой файл). Подробности в консоли (F12)."
+        : `Ошибка загрузки: ${(err as Error).message}`,
+    );
   } finally {
     setLoading(false);
   }

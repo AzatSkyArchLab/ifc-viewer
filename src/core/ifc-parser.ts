@@ -1,5 +1,6 @@
 import {
   IfcAPI,
+  LogLevel,
   IFCPRODUCT,
   IFCSPACE,
   IFCBUILDINGSTOREY,
@@ -38,15 +39,46 @@ export class IfcParser {
     if (this.ready) return;
     this.api.SetWasmPath(import.meta.env.BASE_URL, true);
     await this.api.Init();
+    // Surface web-ifc's own diagnostics: on a bad file it logs the offending
+    // entity to the console before it may abort, which is our only clue.
+    this.api.SetLogLevel(LogLevel.LOG_LEVEL_WARN);
     this.ready = true;
   }
 
-  /** Opens one model from raw bytes and registers it. Returns its model id. */
-  async add(data: Uint8Array, name: string): Promise<number> {
+  /**
+   * Opens one model from raw bytes and registers it. Returns its model id.
+   * `coordinateToOrigin` translates far-from-origin geometry (georeferenced /
+   * МСК models) back to the origin — without it web-ifc's tessellation can hit
+   * float-precision limits and call abort(); used on the safe-mode retry.
+   */
+  async add(
+    data: Uint8Array,
+    name: string,
+    opts: { coordinateToOrigin?: boolean } = {},
+  ): Promise<number> {
     await this.init();
-    const modelId = this.api.OpenModel(data);
+    const modelId = opts.coordinateToOrigin
+      ? this.api.OpenModel(data, { COORDINATE_TO_ORIGIN: true })
+      : this.api.OpenModel(data);
     this.models.push({ modelId, name });
     return modelId;
+  }
+
+  /**
+   * Rebuilds the WASM module. A web-ifc abort() leaves the module dead — every
+   * later call throws — so after a failed load we recreate it, otherwise the
+   * whole session is stuck until a page reload.
+   */
+  async recover(): Promise<void> {
+    try {
+      this.clearAll();
+    } catch {
+      /* module already aborted — nothing to close */
+    }
+    this.api = new IfcAPI();
+    this.ready = false;
+    this.models = [];
+    await this.init();
   }
 
   /** Closes every open model. */
@@ -316,7 +348,17 @@ export class IfcParser {
         const placed = mesh.geometries;
         for (let i = 0; i < placed.size(); i++) {
           const pg = placed.get(i);
-          const geom = this.api.GetGeometry(modelId, pg.geometryExpressID);
+          let geom;
+          try {
+            geom = this.api.GetGeometry(modelId, pg.geometryExpressID);
+          } catch (err) {
+            // A single malformed geometry is skipped, not fatal for the model.
+            console.warn(
+              `[web-ifc] пропущена геометрия #${pg.geometryExpressID}:`,
+              err,
+            );
+            continue;
+          }
           const verts = this.api.GetVertexArray(
             geom.GetVertexData(),
             geom.GetVertexDataSize(),
