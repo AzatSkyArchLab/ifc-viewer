@@ -42,6 +42,10 @@ export class Viewer {
   private camera: THREE.PerspectiveCamera;
   private controls: OrbitControls;
   private modelGroup = new THREE.Group();
+  /** Collision markers (red spheres at contact points); cleared on reload. */
+  private markerGroup = new THREE.Group();
+  /** Per-key colour overrides — the two sides of a collision. */
+  private keyColors = new Map<number, THREE.Color>();
   /** Ground grid — dropped to the model's underside after each load. */
   private grid!: THREE.GridHelper;
 
@@ -135,6 +139,7 @@ export class Viewer {
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0xf4f5f7);
     this.scene.add(this.modelGroup);
+    this.modelGroup.add(this.markerGroup);
 
     this.camera = new THREE.PerspectiveCamera(
       60,
@@ -365,6 +370,67 @@ export class Viewer {
     return [...this.selection];
   }
 
+  /**
+   * Per-key colour overrides, on top of the selection highlight. Used to show a
+   * cross-file collision: the element from one model in one colour, its
+   * counterpart from the other model in another. Pass null to clear.
+   */
+  setKeyColors(colors: Map<number, number> | null): void {
+    this.keyColors.clear();
+    if (colors) {
+      for (const [key, hex] of colors) {
+        this.keyColors.set(key, new THREE.Color(hex));
+      }
+    }
+    this.applyMaterials();
+  }
+
+  /**
+   * Drops a marker at each world point — the place where two bodies actually
+   * meet. Points arrive in the model's own coordinates and are shifted by the
+   * same recentring offset the meshes got, so they land on the geometry.
+   */
+  setMarkers(points: { x: number; y: number; z: number }[], color = 0xff0000): void {
+    this.markerGroup.clear();
+    if (points.length === 0) return;
+    // A collision is a ~100 mm feature on a ~100 m site: a world-sized marker is
+    // either invisible zoomed out or enormous up close. Sprites with size
+    // attenuation off keep a constant pixel size, so the spot is always findable.
+    const material = new THREE.SpriteMaterial({
+      map: this.markerTexture(color),
+      sizeAttenuation: false,
+      depthTest: false,
+      transparent: true,
+    });
+    for (const p of points) {
+      const sprite = new THREE.Sprite(material);
+      sprite.position.set(p.x, p.y, p.z);
+      sprite.scale.set(0.035, 0.035, 1);
+      sprite.renderOrder = 999;
+      this.markerGroup.add(sprite);
+    }
+  }
+
+  /** Round dot with a white rim, so it reads against both models' colours. */
+  private markerTexture(color: number): THREE.CanvasTexture {
+    const size = 64;
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = size;
+    const ctx = canvas.getContext("2d")!;
+    ctx.beginPath();
+    ctx.arc(size / 2, size / 2, size / 2 - 6, 0, Math.PI * 2);
+    ctx.fillStyle = `#${color.toString(16).padStart(6, "0")}`;
+    ctx.fill();
+    ctx.lineWidth = 6;
+    ctx.strokeStyle = "#ffffff";
+    ctx.stroke();
+    return new THREE.CanvasTexture(canvas);
+  }
+
+  clearMarkers(): void {
+    this.markerGroup.clear();
+  }
+
   // ── Visibility ───────────────────────────────────────────────────────────────
 
   /**
@@ -389,24 +455,22 @@ export class Viewer {
     for (const [key, refs] of this.byKey) {
       const isHidden = this.lastHidden.has(key);
       const isGhost = !isHidden && this.lastGhost.has(key);
-      const isSel = !isHidden && !isGhost && this.selection.has(key);
+      const override = this.keyColors.get(key);
+      const isSel =
+        !isHidden && !isGhost && (this.selection.has(key) || override !== undefined);
+      const tint = override ?? this.highlightColor;
       const shown = !isHidden && !isGhost;
       for (const ref of refs) {
         if (ref.batch === "solid") {
           this.solids!.setVisibleAt(ref.id, shown);
           this.ghostSolid!.setVisibleAt(ref.id, isGhost);
-          this.setSolidColor(ref.id, isSel ? this.highlightColor : this.solidBase[ref.id]);
+          this.setSolidColor(ref.id, isSel ? tint : this.solidBase[ref.id]);
         } else {
           this.transparent!.setVisibleAt(ref.id, shown);
           this.ghostTrans!.setVisibleAt(ref.id, isGhost);
           if (isSel) {
             const base = this.transBase[ref.id];
-            this._scratchVec4.set(
-              this.highlightColor.r,
-              this.highlightColor.g,
-              this.highlightColor.b,
-              base.w,
-            );
+            this._scratchVec4.set(tint.r, tint.g, tint.b, base.w);
             this.setTransColor(ref.id, this._scratchVec4);
           } else {
             this.setTransColor(ref.id, this.transBase[ref.id]);
@@ -454,6 +518,10 @@ export class Viewer {
       for (const l of arr) l.geometry.dispose();
     }
     this.modelGroup.clear();
+    // The marker layer lives on the model group, so re-attach it after the wipe.
+    this.markerGroup.clear();
+    this.keyColors.clear();
+    this.modelGroup.add(this.markerGroup);
 
     this.solids = this.transparent = this.ghostSolid = this.ghostTrans = null;
     this.spaceOutlines.clear();

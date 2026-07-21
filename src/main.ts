@@ -197,6 +197,52 @@ const STATUS_COLOR: Record<string, number> = {
 };
 
 /**
+ * A cross-file collision is shown in three colours: one model's element, the
+ * other model's element, and the contact point itself. Keeping the two sides
+ * visually distinct is the whole point — it says which discipline is where.
+ */
+const COLLISION_A = 0x2563eb; // первая сторона — синий
+const COLLISION_B = 0xf59e0b; // вторая сторона — янтарный
+const COLLISION_HIT = 0xff0000; // само пересечение — красный
+
+/**
+ * Shows cross-file collisions: each pair's two elements in their own colours
+ * and a red marker where the bodies actually meet. Contact points come from the
+ * backend in model coordinates, so they go through the same recentring shift
+ * the geometry got.
+ */
+function showCollisions(
+  findings: { key: number; pair?: number | null; point?: number[] | null }[],
+  isolate: boolean,
+): void {
+  const colors = new Map<number, number>();
+  const seenPair = new Set<number>();
+  const points: { x: number; y: number; z: number }[] = [];
+  for (const f of findings) {
+    // First side of a pair is A, the second is B.
+    const first = f.pair != null && !seenPair.has(f.pair);
+    if (f.pair != null) seenPair.add(f.pair);
+    colors.set(f.key, first ? COLLISION_A : COLLISION_B);
+    if (first && f.point && f.point.length === 3) {
+      points.push(parser.toScenePoint(f.point));
+    }
+  }
+  const keys = [...colors.keys()];
+  act(() => {
+    vis.focus = null;
+    for (const k of keys) vis.forceShow.add(k);
+    if (isolate) {
+      const keep = new Set(keys);
+      for (const k of allKeys) if (!keep.has(k)) vis.hiddenElems.add(k);
+    }
+  });
+  viewer.setKeyColors(colors);
+  viewer.setMarkers(points, COLLISION_HIT);
+  viewer.fitTo(keys);
+  setStatus(`Коллизий показано: ${points.length} (красным — место пересечения)`);
+}
+
+/**
  * Highlights (or isolates) a set of elements by scene key (a check category).
  * Pins them visible so a layer-hidden type (e.g. IfcSpace) still shows, drops
  * any active floor focus, and frames the camera on them.
@@ -569,9 +615,17 @@ list.setTypeVisibilityHandler((modelId, typeLower, visible) => {
 viewer.setSelectHandler((key, additive) => select(key, additive));
 
 checks.setModelsGetter(() => loadedModels);
-checks.setCategoryHandler((keys, status, isolate) =>
-  focusElements(keys, isolate, STATUS_COLOR[status]),
-);
+checks.setCategoryHandler((findings, status, isolate) => {
+  // Cross-file collisions carry a pair number and a contact point — those get
+  // the two-colour + red-marker treatment instead of one flat highlight.
+  const collisions = findings.filter((f) => f.pair != null && f.point);
+  if (collisions.length > 0) {
+    showCollisions(collisions, isolate);
+    return;
+  }
+  focusElements(findings.filter((f) => f.pickable).map((f) => f.key), isolate,
+                STATUS_COLOR[status]);
+});
 checks.setElementHandler((key, status, isolate) =>
   focusElement(key, isolate, STATUS_COLOR[status]),
 );

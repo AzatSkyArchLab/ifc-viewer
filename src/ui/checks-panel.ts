@@ -7,12 +7,25 @@ import {
 } from "../core/checks-api.ts";
 import { makeKey } from "../core/types.ts";
 
-/** Highlights (or isolates) a status category by its scene keys. */
+/** Highlights (or isolates) a status category. Findings carry the contact point
+ *  and pair number when they come from a cross-file collision check. */
 export type CategoryHandler = (
-  keys: number[],
+  findings: CheckFinding[],
   status: ElementStatus,
   isolate: boolean,
 ) => void;
+
+/** One flagged element as the app sees it. */
+export interface CheckFinding {
+  key: number;
+  label: string;
+  reason: string;
+  pickable: boolean;
+  /** Contact point in model coordinates — set for collision findings. */
+  point?: number[] | null;
+  /** Ties the two sides of one cross-file collision together. */
+  pair?: number | null;
+}
 
 /** A loaded model the check runs against. */
 export interface CheckModel {
@@ -26,21 +39,13 @@ const CATEGORIES: { status: ElementStatus; label: string }[] = [
   { status: "ok", label: "Допустимо" },
 ];
 
-/** One flagged element, with the scene key needed to select it. */
-interface FlaggedElement {
-  key: number;
-  label: string;
-  reason: string;
-  pickable: boolean;
-}
-
 /** Aggregated state of one check across all loaded models. */
 interface CheckAgg {
   id: string;
   name: string;
   description: string;
   counts: Record<ElementStatus, number>;
-  byStatus: Map<ElementStatus, FlaggedElement[]>;
+  byStatus: Map<ElementStatus, CheckFinding[]>;
   report: boolean;
 }
 
@@ -199,17 +204,31 @@ export class ChecksPanel {
     const prefix = multi ? `${file.name.replace(/\.ifc$/i, "")}: ` : "";
     for (const el of check.elements) {
       const list = agg.byStatus.get(el.status) ?? [];
+      // A cross-file finding names its own file: its two sides live in
+      // different models, so the result's own file is the wrong home for it.
+      const owner = el.file ? this.modelIdOf(el.file) : null;
+      const home = owner ?? modelId;
+      const ownerName = el.file ? el.file.replace(/\.ifc$/i, "") : null;
+      const shownPrefix = ownerName ? `${ownerName}: ` : prefix;
       const label = el.express_id
-        ? `${prefix}${el.name ?? el.ifc_class} #${el.express_id}`
+        ? `${shownPrefix}${el.name ?? el.ifc_class} #${el.express_id}`
         : el.name ?? el.ifc_class;
       list.push({
-        key: makeKey(modelId, el.express_id),
+        key: makeKey(home, el.express_id),
         label,
         reason: el.reason,
         pickable: el.pickable !== false,
+        point: el.point,
+        pair: el.pair,
       });
       agg.byStatus.set(el.status, list);
     }
+  }
+
+  /** modelId of an uploaded file by name, or null when it is not loaded. */
+  private modelIdOf(filename: string): number | null {
+    const found = this.getModels().find((m) => m.file.name === filename);
+    return found ? found.modelId : null;
   }
 
   // ── rendering ─────────────────────────────────────────────────────────────
@@ -338,8 +357,11 @@ export class ChecksPanel {
         ev.preventDefault();
         ev.stopPropagation();
         const status = btn.dataset.s as ElementStatus;
-        const keys = pick(btn.dataset.c!, status).map((el) => el.key);
-        this.onCategory(keys, status, btn.dataset.a === "iso");
+        this.onCategory(
+          pick(btn.dataset.c!, status),
+          status,
+          btn.dataset.a === "iso",
+        );
       });
     }
     const elAt = (c: string, s: ElementStatus, i: string) =>

@@ -13,6 +13,13 @@ export interface IfcElementRef {
   reason: string;
   /** Whether the entity has a 3D mesh (highlightable). Units are false. */
   pickable?: boolean;
+  /** Uploaded file the element lives in — set by cross-file checks, whose two
+   *  sides sit in different models. */
+  file?: string | null;
+  /** Contact point of this side of a collision, in model coordinates. */
+  point?: number[] | null;
+  /** Ties the two sides of one collision together. */
+  pair?: number | null;
 }
 
 export interface IfcCheckResult {
@@ -33,7 +40,7 @@ export interface IfcIdsFileResult {
   checks: IfcCheckResult[];
 }
 
-/** Endpoint path on the backend; the origin comes from the runtime config. */
+/** Endpoint path on the backend; the base comes from the runtime config. */
 const CHECKS_PATH = "/ifc_ids_validation";
 
 /**

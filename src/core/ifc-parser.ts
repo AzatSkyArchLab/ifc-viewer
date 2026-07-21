@@ -27,9 +27,24 @@ export class IfcParser {
     }
   >();
   private models: IfcModel[] = [];
+  /** Offset the last geometry pass was recentred by — model → scene space. */
+  private offset = { x: 0, y: 0, z: 0 };
 
   constructor() {
     this.spawn();
+  }
+
+  /**
+   * Shift applied to the geometry so the scene sits around the origin. Anything
+   * arriving in the model's own coordinates (a collision contact point from the
+   * backend, say) must be moved by this to land on the geometry.
+   */
+  toScenePoint(p: number[]): { x: number; y: number; z: number } {
+    return {
+      x: p[0] - this.offset.x,
+      y: p[1] - this.offset.y,
+      z: p[2] - this.offset.z,
+    };
   }
 
   private spawn(): void {
@@ -161,10 +176,14 @@ export class IfcParser {
       [],
       onProgress,
     );
-    if (!Number.isFinite(bbox?.minX)) return chunks;
+    if (!Number.isFinite(bbox?.minX)) {
+      this.offset = { x: 0, y: 0, z: 0 };
+      return chunks;
+    }
     const ox = (bbox.minX + bbox.maxX) / 2;
     const oy = (bbox.minY + bbox.maxY) / 2;
     const oz = (bbox.minZ + bbox.maxZ) / 2;
+    this.offset = { x: ox, y: oy, z: oz };
     for (const mesh of chunks) {
       const p = mesh.positions;
       for (let i = 0; i < p.length; i += 3) {
