@@ -271,6 +271,73 @@ body {
   100% { transform: translateX(275%); }
 }
 
+/* Collision popup — opened by clicking a red contact marker in the 3D view. */
+.clash-pop {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  z-index: 40;
+  width: 320px;
+  max-width: calc(100% - 32px);
+  padding: 12px 14px;
+  background: var(--bg);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  box-shadow: 0 6px 24px rgb(0 0 0 / 12%);
+  font-size: 12px;
+}
+.clash-pop[hidden] {
+  display: none;
+}
+.clash-pop-close {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  border: 0;
+  background: none;
+  font-size: 18px;
+  line-height: 1;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+.clash-pop-close:hover {
+  color: var(--text);
+}
+.clash-pop-title {
+  font-weight: 600;
+  font-size: 13px;
+  margin-bottom: 8px;
+  padding-right: 18px;
+}
+.clash-side {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+}
+.clash-swatch {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  margin-top: 2px;
+  border-radius: 3px;
+}
+.clash-side-file {
+  color: var(--text-faint);
+  font-size: 11px;
+}
+.clash-side-name {
+  color: var(--text);
+  word-break: break-word;
+}
+.clash-depth {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  color: var(--text-soft);
+}
+
 /* Static notice over the empty viewport (e.g. a zip can't be visualised). */
 .viewer-notice {
   position: absolute;

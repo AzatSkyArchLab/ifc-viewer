@@ -54,6 +54,9 @@ export class Viewer {
   private pointerDownPos = new THREE.Vector2();
   /** Element picked at pointer-down (before any orbit); committed on a click. */
   private pendingPick: number | null = null;
+  /** Pair number of the marker pressed, when the press landed on one. */
+  private pendingMarker: number | null = null;
+  private onMarker: (pair: number) => void = () => {};
 
   // ── Batched geometry ─────────────────────────────────────────────────────────
   /** Opaque solids / translucent (IfcSpace + a<1) / their gray ghost twins. */
@@ -390,7 +393,10 @@ export class Viewer {
    * meet. Points arrive in the model's own coordinates and are shifted by the
    * same recentring offset the meshes got, so they land on the geometry.
    */
-  setMarkers(points: { x: number; y: number; z: number }[], color = 0xff0000): void {
+  setMarkers(
+    points: { x: number; y: number; z: number; pair?: number }[],
+    color = 0xff0000,
+  ): void {
     this.markerGroup.clear();
     if (points.length === 0) return;
     // A collision is a ~100 mm feature on a ~100 m site: a world-sized marker is
@@ -407,8 +413,15 @@ export class Viewer {
       sprite.position.set(p.x, p.y, p.z);
       sprite.scale.set(0.035, 0.035, 1);
       sprite.renderOrder = 999;
+      // The pair number rides along so a click can name the collision.
+      sprite.userData.pair = p.pair;
       this.markerGroup.add(sprite);
     }
+  }
+
+  /** Called with the pair number when a collision marker is clicked. */
+  setMarkerHandler(fn: (pair: number) => void): void {
+    this.onMarker = fn;
   }
 
   /** Round dot with a white rim, so it reads against both models' colours. */
@@ -542,7 +555,12 @@ export class Viewer {
     // Pick now, before an orbit can rotate the camera: the click just commits
     // this hit, so a tiny drag between press and release never mis-selects or
     // misses (the old code ray-picked at click time, after the view had moved).
-    this.pendingPick = this.pickAt(event.clientX, event.clientY, !event.altKey);
+    // Markers win over geometry — they are the small thing being aimed at.
+    this.pendingMarker = this.pickMarker(event.clientX, event.clientY);
+    this.pendingPick =
+      this.pendingMarker == null
+        ? this.pickAt(event.clientX, event.clientY, !event.altKey)
+        : null;
   };
 
   private handleClick = (event: MouseEvent): void => {
@@ -552,8 +570,24 @@ export class Viewer {
       event.clientY - this.pointerDownPos.y,
     );
     if (moved > DRAG_THRESHOLD) return;
+    if (this.pendingMarker != null) {
+      this.onMarker(this.pendingMarker);
+      return;
+    }
     this.onSelect(this.pendingPick, event.shiftKey);
   };
+
+  /** Pair number of the collision marker under the cursor, or null. */
+  private pickMarker(clientX: number, clientY: number): number | null {
+    if (this.markerGroup.children.length === 0) return null;
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    this.pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+    this.pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+    this.raycaster.setFromCamera(this.pointer, this.camera);
+    const hits = this.raycaster.intersectObjects(this.markerGroup.children, false);
+    const pair = hits[0]?.object.userData.pair;
+    return typeof pair === "number" ? pair : null;
+  }
 
   /**
    * Ray-picks the element under a screen position against the current camera.

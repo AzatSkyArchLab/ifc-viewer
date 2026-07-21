@@ -6,7 +6,7 @@ import { Viewer } from "./viewer/viewer.ts";
 import { ElementList } from "./ui/element-list.ts";
 import { PropertiesPanel } from "./ui/properties-panel.ts";
 import { TrmView } from "./ui/trm-view.ts";
-import { ChecksPanel } from "./ui/checks-panel.ts";
+import { ChecksPanel, type CheckFinding } from "./ui/checks-panel.ts";
 import { ModelTree } from "./ui/model-tree.ts";
 import { makeDetachable, makeVerticalResizer } from "./ui/pane-resizer.ts";
 import { History } from "./core/history.ts";
@@ -71,6 +71,9 @@ const loadingEl = byId("loading");
 const loadingTextEl = byId("loading-text");
 const loadingBarEl = byId("loading-bar");
 const loadingBarFillEl = byId("loading-bar-fill");
+const clashPopEl = byId("clash-pop");
+const clashPopTitleEl = byId("clash-pop-title");
+const clashPopBodyEl = byId("clash-pop-body");
 const noticeEl = byId("viewer-notice");
 const noticeTextEl = byId("viewer-notice-text");
 
@@ -197,51 +200,106 @@ const STATUS_COLOR: Record<string, number> = {
 };
 
 /**
- * A cross-file collision is shown in three colours: one model's element, the
- * other model's element, and the contact point itself. Keeping the two sides
- * visually distinct is the whole point — it says which discipline is where.
+ * A collision is shown in three colours: one file's element, the other file's
+ * element, and the contact point. Neither side may be orange — that is the
+ * selection highlight, and a collision must never read as "this is selected".
  */
 const COLLISION_A = 0x2563eb; // первая сторона — синий
-const COLLISION_B = 0xf59e0b; // вторая сторона — янтарный
+const COLLISION_B = 0x9333ea; // вторая сторона — фиолетовый
 const COLLISION_HIT = 0xff0000; // само пересечение — красный
 
+/** One collision as the UI holds it: two sides sharing a pair number. */
+interface ClashSides {
+  a?: CheckFinding;
+  b?: CheckFinding;
+}
+
+/** Collisions currently on screen, keyed by pair number. */
+let clashPairs = new Map<number, ClashSides>();
+
 /**
- * Shows cross-file collisions: each pair's two elements in their own colours
- * and a red marker where the bodies actually meet. Contact points come from the
- * backend in model coordinates, so they go through the same recentring shift
- * the geometry got.
+ * Puts the collisions on screen as markers only — a red dot at every contact
+ * point, nothing recoloured yet. Which two elements met is answered on demand,
+ * by clicking a dot: colouring every pair at once turns the model into noise
+ * once there are more than a handful.
  */
-function showCollisions(
-  findings: { key: number; pair?: number | null; point?: number[] | null }[],
-  isolate: boolean,
-): void {
-  const colors = new Map<number, number>();
-  const seenPair = new Set<number>();
-  const points: { x: number; y: number; z: number }[] = [];
+function showCollisions(findings: CheckFinding[], isolate: boolean): void {
+  clashPairs = new Map();
   for (const f of findings) {
-    // First side of a pair is A, the second is B.
-    const first = f.pair != null && !seenPair.has(f.pair);
-    if (f.pair != null) seenPair.add(f.pair);
-    colors.set(f.key, first ? COLLISION_A : COLLISION_B);
-    if (first && f.point && f.point.length === 3) {
-      points.push(parser.toScenePoint(f.point));
-    }
+    if (f.pair == null) continue;
+    const sides = clashPairs.get(f.pair) ?? {};
+    if (sides.a === undefined) sides.a = f;
+    else sides.b = f;
+    clashPairs.set(f.pair, sides);
   }
-  const keys = [...colors.keys()];
+
+  const keys: number[] = [];
+  const points: { x: number; y: number; z: number; pair: number }[] = [];
+  for (const [pair, sides] of clashPairs) {
+    for (const side of [sides.a, sides.b]) if (side) keys.push(side.key);
+    const at = sides.a?.point ?? sides.b?.point;
+    if (at && at.length === 3) points.push({ ...parser.toScenePoint(at), pair });
+  }
+
   act(() => {
     vis.focus = null;
+    // Pin both sides visible so a click can always reveal them, even if their
+    // type layer is hidden.
     for (const k of keys) vis.forceShow.add(k);
     if (isolate) {
       const keep = new Set(keys);
       for (const k of allKeys) if (!keep.has(k)) vis.hiddenElems.add(k);
     }
   });
-  viewer.setKeyColors(colors);
+  viewer.setKeyColors(null);
   viewer.setMarkers(points, COLLISION_HIT);
   viewer.fitTo(keys);
-  setStatus(`Коллизий показано: ${points.length} (красным — место пересечения)`);
+  closeClashPopup();
+  setStatus(
+    `Коллизий: ${points.length} — кликните красную точку, чтобы увидеть пару`,
+  );
 }
 
+/** Colours one pair's two elements and names them in the popup. */
+function openClashPopup(pair: number): void {
+  const sides = clashPairs.get(pair);
+  if (!sides?.a) return;
+
+  const colors = new Map<number, number>();
+  colors.set(sides.a.key, COLLISION_A);
+  if (sides.b) colors.set(sides.b.key, COLLISION_B);
+  viewer.setKeyColors(colors);
+
+  const side = (finding: CheckFinding | undefined, color: number): string => {
+    if (!finding) return "";
+    const [file, ...rest] = finding.label.split(": ");
+    const name = rest.length ? rest.join(": ") : finding.label;
+    return `
+      <div class="clash-side">
+        <span class="clash-swatch" style="background:#${color.toString(16).padStart(6, "0")}"></span>
+        <span>
+          ${rest.length ? `<span class="clash-side-file">${escapeHtml(file)}</span><br />` : ""}
+          <span class="clash-side-name">${escapeHtml(name)}</span>
+        </span>
+      </div>`;
+  };
+
+  clashPopTitleEl.textContent = `Коллизия №${pair}`;
+  clashPopBodyEl.innerHTML =
+    side(sides.a, COLLISION_A) +
+    side(sides.b, COLLISION_B) +
+    `<div class="clash-depth">${escapeHtml(sides.a.reason)}</div>`;
+  clashPopEl.hidden = false;
+}
+
+function closeClashPopup(): void {
+  clashPopEl.hidden = true;
+  viewer.setKeyColors(null);
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
 /**
  * Highlights (or isolates) a set of elements by scene key (a check category).
  * Pins them visible so a layer-hidden type (e.g. IfcSpace) still shows, drops
@@ -615,6 +673,9 @@ list.setTypeVisibilityHandler((modelId, typeLower, visible) => {
 viewer.setSelectHandler((key, additive) => select(key, additive));
 
 checks.setModelsGetter(() => loadedModels);
+viewer.setMarkerHandler((pair) => openClashPopup(pair));
+byId<HTMLButtonElement>("clash-pop-close").addEventListener("click", closeClashPopup);
+
 checks.setCategoryHandler((findings, status, isolate) => {
   // Cross-file collisions carry a pair number and a contact point — those get
   // the two-colour + red-marker treatment instead of one flat highlight.
