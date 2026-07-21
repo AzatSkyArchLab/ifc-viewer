@@ -35,15 +35,20 @@ export class IfcParser {
   }
 
   /**
-   * Shift applied to the geometry so the scene sits around the origin. Anything
-   * arriving in the model's own coordinates (a collision contact point from the
-   * backend, say) must be moved by this to land on the geometry.
+   * Maps a point given in IFC world coordinates into the scene.
+   *
+   * Two corrections, both mandatory. IFC is Z-up while web-ifc hands the viewer
+   * three.js axes (Y-up), so the point is swapped the same way the geometry was:
+   * (x, y, z) → (x, z, −y). Then the recentring offset — the shift that moved
+   * the model to the origin — is taken off. Skipping the swap puts the marker in
+   * a different axis frame entirely, which is how a contact point ends up
+   * hovering above the model instead of sitting in the joint.
    */
   toScenePoint(p: number[]): { x: number; y: number; z: number } {
     return {
       x: p[0] - this.offset.x,
-      y: p[1] - this.offset.y,
-      z: p[2] - this.offset.z,
+      y: p[2] - this.offset.y,
+      z: -p[1] - this.offset.z,
     };
   }
 
