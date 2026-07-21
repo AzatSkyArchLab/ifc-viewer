@@ -1,6 +1,7 @@
 import "./style.css";
 import { loadConfig } from "./core/config.ts";
 import { IfcParser } from "./core/ifc-parser.ts";
+import { modelOfKey } from "./core/types.ts";
 import type { IfcStorey } from "./core/types.ts";
 import { Viewer } from "./viewer/viewer.ts";
 import { ElementList } from "./ui/element-list.ts";
@@ -127,6 +128,9 @@ function painted(): Promise<void> {
   });
 }
 
+/** What the status line says at rest — restored after a transient message. */
+let modelSummary = "";
+
 /** Ordered selection of composite keys; the last is the most recent pick. */
 let selection: number[] = [];
 /** Loaded models (file + web-ifc model id), re-sent to the backend for checks. */
@@ -208,13 +212,15 @@ const COLLISION_A = 0x2563eb; // первая сторона — синий
 const COLLISION_B = 0x9333ea; // вторая сторона — фиолетовый
 const COLLISION_HIT = 0xff0000; // само пересечение — красный
 
-/** One collision as the UI holds it: two sides sharing a pair number. */
+/** One collision as the UI holds it: two sides plus the number shown to the user. */
 interface ClashSides {
   a?: CheckFinding;
   b?: CheckFinding;
+  /** What the marker is labelled with — the same «№ точки» the report prints. */
+  label: string;
 }
 
-/** Collisions currently on screen, keyed by pair number. */
+/** Collisions currently on screen, keyed by marker id (unique across files). */
 let clashPairs = new Map<number, ClashSides>();
 
 /**
@@ -225,22 +231,45 @@ let clashPairs = new Map<number, ClashSides>();
  */
 function showCollisions(findings: CheckFinding[], isolate: boolean): void {
   clashPairs = new Map();
+  // A within-file check numbers from 1 in every model, so its numbers repeat
+  // across a set and the model has to be part of the grouping key. A cross-file
+  // check numbers the whole set once, and its two sides live in *different*
+  // models — there the number alone is the key. Either way the marker gets its
+  // own id, and the number stays what the user reads.
+  const byGroup = new Map<string, number>();
+  let markerId = 0;
   for (const f of findings) {
     if (f.pair == null) continue;
-    const sides = clashPairs.get(f.pair) ?? {};
+    const group = f.file
+      ? `set:${f.pair}`
+      : `${f.source ?? modelOfKey(f.key)}:${f.pair}`;
+    let id = byGroup.get(group);
+    if (id === undefined) {
+      id = ++markerId;
+      byGroup.set(group, id);
+      clashPairs.set(id, { label: String(f.pair) });
+    }
+    const sides = clashPairs.get(id)!;
     if (sides.a === undefined) sides.a = f;
     else sides.b = f;
-    clashPairs.set(f.pair, sides);
   }
 
   const keys: number[] = [];
-  const points: { x: number; y: number; z: number; pair: number }[] = [];
+  const points: { x: number; y: number; z: number; pair: number; label: string }[] = [];
   for (const [pair, sides] of clashPairs) {
     for (const side of [sides.a, sides.b]) if (side) keys.push(side.key);
     const at = sides.a?.point ?? sides.b?.point;
-    if (at && at.length === 3) points.push({ ...parser.toScenePoint(at), pair });
+    if (at && at.length === 3) {
+      points.push({ ...parser.toScenePoint(at), pair, label: sides.label });
+    }
   }
 
+  if (!parser.isOpen) {
+    // Zip-режим: 3D нет вообще, и точки повисли бы в пустоте на сырых
+    // координатах модели. Номера остаются в списке находок и в Excel.
+    setStatus(`Коллизий: ${clashPairs.size} — визуализация недоступна для архива`);
+    return;
+  }
   act(() => {
     vis.focus = null;
     // Pin both sides visible so a click can always reveal them, even if their
@@ -256,7 +285,8 @@ function showCollisions(findings: CheckFinding[], isolate: boolean): void {
   viewer.fitTo(keys);
   closeClashPopup();
   setStatus(
-    `Коллизий: ${points.length} — кликните красную точку, чтобы увидеть пару`,
+    `Коллизий: ${points.length} — номер у точки совпадает с «№ точки» в Excel; ` +
+      `кликните точку, чтобы увидеть пару`,
   );
 }
 
@@ -269,6 +299,7 @@ function openClashPopup(pair: number): void {
   colors.set(sides.a.key, COLLISION_A);
   if (sides.b) colors.set(sides.b.key, COLLISION_B);
   viewer.setKeyColors(colors);
+  viewer.setActiveMarker(pair);
 
   const side = (finding: CheckFinding | undefined, color: number): string => {
     if (!finding) return "";
@@ -284,7 +315,7 @@ function openClashPopup(pair: number): void {
       </div>`;
   };
 
-  clashPopTitleEl.textContent = `Коллизия №${pair}`;
+  clashPopTitleEl.textContent = `Коллизия №${sides.label}`;
   clashPopBodyEl.innerHTML =
     side(sides.a, COLLISION_A) +
     side(sides.b, COLLISION_B) +
@@ -292,20 +323,36 @@ function openClashPopup(pair: number): void {
   clashPopEl.hidden = false;
 }
 
+/**
+ * Drops the collision markers. Numbered dots belong to one check run: left on
+ * screen while another check is shown, they read as findings of *that* check
+ * and their numbers point into the wrong report.
+ */
+function clearCollisions(): void {
+  if (clashPairs.size === 0) return;
+  closeClashPopup();
+  clashPairs = new Map();
+  viewer.setMarkers([]);
+  setStatus(modelSummary);
+}
+
 function closeClashPopup(): void {
   clashPopEl.hidden = true;
   viewer.setKeyColors(null);
+  viewer.setActiveMarker(null);
 }
 
 function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
+
 /**
  * Highlights (or isolates) a set of elements by scene key (a check category).
  * Pins them visible so a layer-hidden type (e.g. IfcSpace) still shows, drops
  * any active floor focus, and frames the camera on them.
  */
 function focusElements(keys: number[], isolate: boolean, color?: number): void {
+  clearCollisions();
   act(() => {
     vis.focus = null;
     for (const k of keys) vis.forceShow.add(k);
@@ -329,6 +376,7 @@ function focusElements(keys: number[], isolate: boolean, color?: number): void {
  * everything except this element.
  */
 function focusElement(key: number, isolate: boolean, color?: number): void {
+  clearCollisions();
   act(() => {
     vis.focus = null;
     vis.forceShow.add(key);
@@ -572,7 +620,8 @@ async function openFiles(files: File[], safe = false): Promise<void> {
     updateViewButton();
     const label = files.length === 1 ? files[0].name : `моделей: ${files.length}`;
     setProgress(1);
-    setStatus(`${label} · элементов: ${elements.length}`);
+    modelSummary = `${label} · элементов: ${elements.length}`;
+    setStatus(modelSummary);
   } catch (err) {
     console.error("Загрузка IFC не удалась:", err);
     // A moderate-sized abort is usually far-from-origin geometry — rebuild the

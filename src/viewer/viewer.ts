@@ -15,6 +15,12 @@ const SPACE_COLOR = new THREE.Color(0x33aaff);
 const SPACE_EDGE_COLOR = new THREE.Color(0x0a4fa0);
 /** Threshold in pixels: a click that moved more than this is treated as orbit. */
 const DRAG_THRESHOLD = 6;
+/** Collision dot size — sprite units, constant on screen (~28 px at 800 px tall). */
+const MARKER_SIZE = 0.035;
+/** How much the sprite grows to fit the ring around an unchanged dot. */
+const RING_FACTOR = 1.5;
+/** Height of a collision number plate, in the same sprite units. */
+const LABEL_SIZE = 0.028;
 
 /** Where an element's geometry lives inside the batches (one entry per geometry). */
 interface InstRef {
@@ -57,6 +63,12 @@ export class Viewer {
   /** Pair number of the marker pressed, when the press landed on one. */
   private pendingMarker: number | null = null;
   private onMarker: (pair: number) => void = () => {};
+  /** Marker sprites by pair number, so one can be ringed on demand. */
+  private markerByPair = new Map<number, THREE.Sprite>();
+  /** Shared materials of the current marker set: plain dot and ringed dot. */
+  private markerDot: THREE.SpriteMaterial | null = null;
+  private markerRing: THREE.SpriteMaterial | null = null;
+  private activeMarker: number | null = null;
 
   // ── Batched geometry ─────────────────────────────────────────────────────────
   /** Opaque solids / translucent (IfcSpace + a<1) / their gray ghost twins. */
@@ -392,31 +404,64 @@ export class Viewer {
    * Drops a marker at each world point — the place where two bodies actually
    * meet. Points arrive in the model's own coordinates and are shifted by the
    * same recentring offset the meshes got, so they land on the geometry.
+   *
+   * Each point may carry a `label` — its collision number, the same one the
+   * Excel report prints in «№ точки». Written next to the dot, it turns the
+   * markers from anonymous red spots into something a reviewer can name.
    */
   setMarkers(
-    points: { x: number; y: number; z: number; pair?: number }[],
+    points: { x: number; y: number; z: number; pair?: number; label?: string }[],
     color = 0xff0000,
   ): void {
-    this.markerGroup.clear();
+    this.disposeMarkers();
     if (points.length === 0) return;
     // A collision is a ~100 mm feature on a ~100 m site: a world-sized marker is
     // either invisible zoomed out or enormous up close. Sprites with size
     // attenuation off keep a constant pixel size, so the spot is always findable.
-    const material = new THREE.SpriteMaterial({
+    this.markerDot = new THREE.SpriteMaterial({
       map: this.markerTexture(color),
       sizeAttenuation: false,
       depthTest: false,
       transparent: true,
     });
+    this.markerRing = new THREE.SpriteMaterial({
+      map: this.ringTexture(color),
+      sizeAttenuation: false,
+      depthTest: false,
+      transparent: true,
+    });
     for (const p of points) {
-      const sprite = new THREE.Sprite(material);
+      const sprite = new THREE.Sprite(this.markerDot);
       sprite.position.set(p.x, p.y, p.z);
-      sprite.scale.set(0.035, 0.035, 1);
+      sprite.scale.set(MARKER_SIZE, MARKER_SIZE, 1);
       sprite.renderOrder = 999;
       // The pair number rides along so a click can name the collision.
       sprite.userData.pair = p.pair;
       this.markerGroup.add(sprite);
+      if (typeof p.pair === "number") this.markerByPair.set(p.pair, sprite);
+      if (p.label) this.markerGroup.add(this.markerLabel(p, p.label));
     }
+    this.requestRender();
+  }
+
+  /** Ringed marker for the collision currently open; null clears the ring. */
+  setActiveMarker(pair: number | null): void {
+    if (this.activeMarker != null) {
+      const previous = this.markerByPair.get(this.activeMarker);
+      if (previous && this.markerDot) {
+        previous.material = this.markerDot;
+        previous.scale.set(MARKER_SIZE, MARKER_SIZE, 1);
+      }
+    }
+    this.activeMarker = pair;
+    const sprite = pair == null ? undefined : this.markerByPair.get(pair);
+    if (sprite && this.markerRing) {
+      sprite.material = this.markerRing;
+      // The ring canvas is 1.5× wider around the same dot, so the sprite grows
+      // by the same factor — the dot keeps its size and only the ring appears.
+      sprite.scale.set(MARKER_SIZE * RING_FACTOR, MARKER_SIZE * RING_FACTOR, 1);
+    }
+    this.requestRender();
   }
 
   /** Called with the pair number when a collision marker is clicked. */
@@ -440,8 +485,117 @@ export class Viewer {
     return new THREE.CanvasTexture(canvas);
   }
 
+  /** The same dot inside a ring — the marker whose collision is open. */
+  private ringTexture(color: number): THREE.CanvasTexture {
+    const size = 96;
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = size;
+    const ctx = canvas.getContext("2d")!;
+    const middle = size / 2;
+    const hex = `#${color.toString(16).padStart(6, "0")}`;
+    // Dot drawn at exactly the size it has when not active (the canvas grew,
+    // not the dot), so switching materials does not make the point jump.
+    ctx.beginPath();
+    ctx.arc(middle, middle, 26, 0, Math.PI * 2);
+    ctx.fillStyle = hex;
+    ctx.fill();
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = "#ffffff";
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(middle, middle, 42, 0, Math.PI * 2);
+    ctx.lineWidth = 8;
+    ctx.strokeStyle = "#ffffff";
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(middle, middle, 42, 0, Math.PI * 2);
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = hex;
+    ctx.stroke();
+    return new THREE.CanvasTexture(canvas);
+  }
+
+  /** Number plate placed just above-right of a marker. Never raycast. */
+  private markerLabel(
+    at: { x: number; y: number; z: number },
+    text: string,
+  ): THREE.Sprite {
+    const height = 64;
+    const font = "bold 40px system-ui, sans-serif";
+    const measure = document.createElement("canvas").getContext("2d")!;
+    measure.font = font;
+    const width = Math.ceil(measure.measureText(text).width) + 28;
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d")!;
+    ctx.fillStyle = "rgba(17, 24, 39, 0.82)";
+    ctx.beginPath();
+    ctx.roundRect(0, 0, width, height, 14);
+    ctx.fill();
+    ctx.font = font;
+    ctx.fillStyle = "#ffffff";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(text, width / 2, height / 2 + 2);
+    const texture = new THREE.CanvasTexture(canvas);
+    // Text shrunk by a mipmap chain turns to mush; keep it a plain bilinear read.
+    texture.minFilter = THREE.LinearFilter;
+    texture.generateMipmaps = false;
+    const sprite = new THREE.Sprite(
+      new THREE.SpriteMaterial({
+        map: texture,
+        sizeAttenuation: false,
+        depthTest: false,
+        transparent: true,
+      }),
+    );
+    const scaleY = LABEL_SIZE;
+    const scaleX = (scaleY * width) / height;
+    sprite.position.set(at.x, at.y, at.z);
+    sprite.scale.set(scaleX, scaleY, 1);
+    // `center` is the anchor point that lands on the position, so moving it off
+    // (0.5, 0.5) parks the whole plate above-right of the dot — clear of it at
+    // every zoom level, because both sizes are screen-constant.
+    const offsetX = MARKER_SIZE * 0.85 + scaleX / 2;
+    const offsetY = MARKER_SIZE * 0.5 + scaleY / 2;
+    sprite.center.set(0.5 - offsetX / scaleX, 0.5 - offsetY / scaleY);
+    sprite.renderOrder = 1000;
+    // A label must never answer a click: markers win over geometry, and a hit on
+    // the plate would otherwise swallow the press without opening anything.
+    sprite.raycast = () => {};
+    return sprite;
+  }
+
   clearMarkers(): void {
+    this.disposeMarkers();
+  }
+
+  /**
+   * Drops the marker set and frees its GPU memory. Every set builds its own
+   * canvas textures (one per label), so clearing the group alone would leak
+   * them on each re-run of a check.
+   */
+  private disposeMarkers(): void {
+    const shared = new Set<THREE.Material>();
+    for (const material of [this.markerDot, this.markerRing]) {
+      if (!material) continue;
+      shared.add(material);
+      material.map?.dispose();
+      material.dispose();
+    }
+    for (const child of this.markerGroup.children) {
+      // Every dot reuses one of the two shared materials; each label owns its
+      // own texture, and that is what would otherwise pile up run after run.
+      const material = (child as THREE.Sprite).material;
+      if (shared.has(material)) continue;
+      material.map?.dispose();
+      material.dispose();
+    }
     this.markerGroup.clear();
+    this.markerByPair.clear();
+    this.markerDot = this.markerRing = null;
+    this.activeMarker = null;
   }
 
   // ── Visibility ───────────────────────────────────────────────────────────────
@@ -532,7 +686,7 @@ export class Viewer {
     }
     this.modelGroup.clear();
     // The marker layer lives on the model group, so re-attach it after the wipe.
-    this.markerGroup.clear();
+    this.disposeMarkers();
     this.keyColors.clear();
     this.modelGroup.add(this.markerGroup);
 
@@ -585,8 +739,9 @@ export class Viewer {
     this.pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1;
     this.raycaster.setFromCamera(this.pointer, this.camera);
     const hits = this.raycaster.intersectObjects(this.markerGroup.children, false);
-    const pair = hits[0]?.object.userData.pair;
-    return typeof pair === "number" ? pair : null;
+    // Number plates share the group with the dots; only a dot carries a pair.
+    const hit = hits.find((h) => typeof h.object.userData.pair === "number");
+    return hit ? (hit.object.userData.pair as number) : null;
   }
 
   /**

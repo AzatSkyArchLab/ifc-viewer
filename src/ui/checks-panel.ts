@@ -25,6 +25,10 @@ export interface CheckFinding {
   point?: number[] | null;
   /** Ties the two sides of one cross-file collision together. */
   pair?: number | null;
+  /** File the element belongs to — set only when the check spans files. */
+  file?: string | null;
+  /** File whose result carried this finding (a zip member has no model). */
+  source?: string;
 }
 
 /** A loaded model the check runs against. */
@@ -151,16 +155,22 @@ export class ChecksPanel {
     models: CheckModel[],
     onlyId?: string,
   ): void {
-    const multi = models.length > 1;
+    // A zip goes up as one file and comes back as one result per IFC inside it,
+    // so results and models line up only when nothing was unpacked. Matching by
+    // name keeps every member's checks; a member with no model of its own is
+    // still shown, hosted by the archive it arrived in.
+    const byName = new Map(models.map((m) => [m.file.name, m]));
+    const multi = results.length > 1 || models.length > 1;
     const built = new Map<string, CheckAgg>();
     const order: string[] = [];
     results.forEach((fileResult, i) => {
-      const model = models[i];
+      const model = byName.get(fileResult.filename) ?? models[i] ?? models[0];
       if (!model) return;
+      const name = fileResult.filename || model.file.name;
       for (const check of fileResult.checks ?? []) {
         if (check.scope === "batch" && i > 0) continue; // merge cross-file once
         if (onlyId && check.id !== onlyId) continue;
-        this.mergeCheck(built, order, check, model.file, model.modelId, multi);
+        this.mergeCheck(built, order, check, name, model.modelId, multi);
       }
     });
     for (const [id, agg] of built) {
@@ -181,7 +191,7 @@ export class ChecksPanel {
     checks: Map<string, CheckAgg>,
     order: string[],
     check: IfcCheckResult,
-    file: File,
+    fileName: string,
     modelId: number,
     multi: boolean,
   ): void {
@@ -201,7 +211,7 @@ export class ChecksPanel {
     for (const s of ["violation", "review", "ok"] as ElementStatus[]) {
       agg.counts[s] += check.counts[s] ?? 0;
     }
-    const prefix = multi ? `${file.name.replace(/\.ifc$/i, "")}: ` : "";
+    const prefix = multi ? `${fileName.replace(/\.ifc$/i, "")}: ` : "";
     for (const el of check.elements) {
       const list = agg.byStatus.get(el.status) ?? [];
       // A cross-file finding names its own file: its two sides live in
@@ -220,6 +230,8 @@ export class ChecksPanel {
         pickable: el.pickable !== false,
         point: el.point,
         pair: el.pair,
+        file: el.file,
+        source: fileName,
       });
       agg.byStatus.set(el.status, list);
     }
