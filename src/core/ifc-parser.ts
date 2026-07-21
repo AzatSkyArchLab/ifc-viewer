@@ -56,8 +56,15 @@ export class IfcParser {
       return;
     }
     this.pending.delete(msg.id);
-    if (msg.ok) p.resolve({ result: msg.result, chunks: p.chunks });
-    else p.reject(new Error(msg.message || "worker error"));
+    if (msg.ok) {
+      p.resolve({ result: msg.result, chunks: p.chunks });
+      return;
+    }
+    const err = new Error(msg.message || "worker error") as Error & {
+      failedGeometry?: number;
+    };
+    if (msg.failedGeometry != null) err.failedGeometry = msg.failedGeometry;
+    p.reject(err);
   }
 
   /** A fatal worker error (e.g. a hard WASM trap) — fail everything in flight. */
@@ -146,8 +153,14 @@ export class IfcParser {
    */
   async getMeshes(
     onProgress?: (done: number, total: number) => void,
+    skip: number[] = [],
   ): Promise<IfcMeshData[]> {
-    const { result: bbox, chunks } = await this.call("meshes", {}, [], onProgress);
+    const { result: bbox, chunks } = await this.call(
+      "meshes",
+      { skip },
+      [],
+      onProgress,
+    );
     if (!Number.isFinite(bbox?.minX)) return chunks;
     const ox = (bbox.minX + bbox.maxX) / 2;
     const oy = (bbox.minY + bbox.maxY) / 2;

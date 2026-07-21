@@ -347,6 +347,12 @@ const HEAVY_3D_BYTES = 700 * 1024 * 1024;
 const RETRY_BYTES = 120 * 1024 * 1024;
 
 /**
+ * How many individually-too-heavy elements to drop before giving up on 3D.
+ * Each retry costs one re-parse, which is seconds even for a 256 MB model.
+ */
+const GEOMETRY_RETRIES = 8;
+
+/**
  * Loads and displays one or more IFC files. `safe` re-runs with
  * COORDINATE_TO_ORIGIN after a first-attempt abort (the common cause is a
  * georeferenced model whose far-from-origin coordinates overflow web-ifc's
@@ -402,10 +408,42 @@ async function openFiles(files: File[], safe = false): Promise<void> {
       const tGeom = performance.now();
       // Geometry runs in the worker; progress paints because the main thread is
       // free. Load meshes first so the list's initial layer-hides (IfcSpace) apply.
-      const meshes = await parser.getMeshes((done, total) =>
-        setProgress(total > 0 ? done / total : null),
-      );
-      viewer.loadMeshes(meshes);
+      //
+      // One pathological element can demand more than the WASM heap has and its
+      // abort() kills the module, taking the whole model's geometry with it.
+      // So: note which element did it, restart the worker, re-open (the parse is
+      // seconds) and run again without it. A handful of such elements is worth
+      // dropping to get the rest of the model on screen.
+      const skip: number[] = [];
+      for (let attempt = 0; ; attempt++) {
+        try {
+          const meshes = await parser.getMeshes(
+            (done, total) => setProgress(total > 0 ? done / total : null),
+            skip,
+          );
+          viewer.loadMeshes(meshes);
+          if (skip.length > 0) {
+            setNotice(
+              `Пропущено тяжёлых элементов: ${skip.length} — их геометрия не ` +
+                "помещается в память браузера. Остальная модель показана.",
+            );
+          }
+          break;
+        } catch (err) {
+          const bad = (err as Error & { failedGeometry?: number }).failedGeometry;
+          if (bad == null || attempt >= GEOMETRY_RETRIES) throw err;
+          console.warn(`[viewer] геометрия #${bad} не влезла — пропускаю и повторяю`);
+          skip.push(bad);
+          setLoading(true, `Пропускаю тяжёлую геометрию (${skip.length})…`);
+          setProgress(null);
+          await painted();
+          await parser.recover();
+          for (const file of files) {
+            const data = new Uint8Array(await file.arrayBuffer());
+            await parser.add(data, file.name, { coordinateToOrigin: safe });
+          }
+        }
+      }
       console.info(`[viewer] геометрия: ${Math.round(performance.now() - tGeom)} мс`);
     }
 

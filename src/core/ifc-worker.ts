@@ -50,11 +50,13 @@ async function init(wasmBase: string): Promise<void> {
 const COARSE_CURVES_BYTES = 120 * 1024 * 1024;
 
 function open(data: Uint8Array, name: string, coordinateToOrigin: boolean): IfcModel {
+  // MEMORY_LIMIT is deliberately left at web-ifc's 2 GB default. Raising it (we
+  // tried 3 GB) only tells web-ifc it may keep more of the model resident, which
+  // eats the very headroom tessellation needs inside the 4 GB WASM space.
   const settings: {
-    MEMORY_LIMIT: number;
     CIRCLE_SEGMENTS?: number;
     COORDINATE_TO_ORIGIN?: boolean;
-  } = { MEMORY_LIMIT: 3_000_000_000 };
+  } = {};
   // Big models die with bad_alloc inside GetGeometry; halving the segments per
   // circle (web-ifc's default is 12) cuts the tessellation these produce, which
   // is the difference between a rough model and none at all.
@@ -194,7 +196,10 @@ const MESH_BATCH = 300;
  * known once every mesh is seen, so the final bbox is returned and the main
  * thread applies it.
  */
-function getMeshes(id: number): {
+function getMeshes(
+  id: number,
+  skip: Set<number>,
+): {
   minX: number; minY: number; minZ: number;
   maxX: number; maxY: number; maxZ: number;
 } {
@@ -228,12 +233,23 @@ function getMeshes(id: number): {
       const placed = mesh.geometries;
       for (let i = 0; i < placed.size(); i++) {
         const pg = placed.get(i);
+        // Known offender from an earlier pass — never touch it again.
+        if (skip.has(pg.geometryExpressID)) continue;
         let geom;
         try {
           geom = api.GetGeometry(modelId, pg.geometryExpressID);
         } catch (err) {
-          console.warn(`[web-ifc] пропущена геометрия #${pg.geometryExpressID}:`, err);
-          continue;
+          // A single element can demand more than the WASM heap can give, and
+          // that abort() kills the whole module — carrying on would only throw
+          // for every remaining mesh. Stop and name the culprit so the caller
+          // can restart and repeat the pass without it.
+          const fatal = new Error(
+            `геометрия #${pg.geometryExpressID} не поместилась в память: ` +
+              `${(err as Error)?.message ?? err}`,
+          );
+          (fatal as Error & { failedGeometry?: number }).failedGeometry =
+            pg.geometryExpressID;
+          throw fatal;
         }
         const verts = api.GetVertexArray(geom.GetVertexData(), geom.GetVertexDataSize());
         const indices = api.GetIndexArray(geom.GetIndexData(), geom.GetIndexDataSize());
@@ -430,6 +446,7 @@ interface Msg {
   coordinateToOrigin?: boolean;
   wasmBase?: string;
   key?: number;
+  skip?: number[];
 }
 
 ctx.onmessage = async (event: MessageEvent<Msg>): Promise<void> => {
@@ -458,7 +475,11 @@ ctx.onmessage = async (event: MessageEvent<Msg>): Promise<void> => {
       case "meshes":
         // Meshes stream out in batches; the reply carries only the final bbox,
         // which the main thread uses to recentre what it collected.
-        ctx.postMessage({ id: msg.id, ok: true, result: getMeshes(msg.id) });
+        ctx.postMessage({
+          id: msg.id,
+          ok: true,
+          result: getMeshes(msg.id, new Set(msg.skip ?? [])),
+        });
         break;
       case "elementInfo":
         ctx.postMessage({ id: msg.id, ok: true, result: await getElementInfo(msg.key!) });
@@ -475,6 +496,10 @@ ctx.onmessage = async (event: MessageEvent<Msg>): Promise<void> => {
       id: msg.id,
       ok: false,
       message: `[${msg.cmd}] ${(err as Error)?.message ?? String(err)}`,
+      // Set when one element's geometry blew the heap: the caller retries the
+      // pass with this id skipped.
+      failedGeometry: (err as Error & { failedGeometry?: number })
+        ?.failedGeometry,
     });
   }
 };
