@@ -311,10 +311,24 @@ body {
 }
 .clash-side {
   display: flex;
+  width: 100%;
   gap: 8px;
   align-items: flex-start;
-  padding: 6px 0;
+  padding: 6px 4px;
+  border: 0;
   border-top: 1px solid var(--border);
+  border-radius: 4px;
+  background: none;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.clash-side:hover {
+  background: var(--bg-soft, #f2f4f7);
+}
+.clash-side.active {
+  background: var(--bg-soft, #f2f4f7);
+  box-shadow: inset 2px 0 0 var(--text-faint);
 }
 .clash-swatch {
   flex: none;

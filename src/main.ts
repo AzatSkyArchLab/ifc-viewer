@@ -306,13 +306,14 @@ function openClashPopup(pair: number): void {
     const [file, ...rest] = finding.label.split(": ");
     const name = rest.length ? rest.join(": ") : finding.label;
     return `
-      <div class="clash-side">
+      <button class="clash-side" type="button" data-key="${finding.key}"
+              title="Показать элемент в модели">
         <span class="clash-swatch" style="background:#${color.toString(16).padStart(6, "0")}"></span>
         <span>
           ${rest.length ? `<span class="clash-side-file">${escapeHtml(file)}</span><br />` : ""}
           <span class="clash-side-name">${escapeHtml(name)}</span>
         </span>
-      </div>`;
+      </button>`;
   };
 
   clashPopTitleEl.textContent = `Коллизия №${sides.label}`;
@@ -320,7 +321,34 @@ function openClashPopup(pair: number): void {
     side(sides.a, COLLISION_A) +
     side(sides.b, COLLISION_B) +
     `<div class="clash-depth">${escapeHtml(sides.a.reason)}</div>`;
+  for (const row of clashPopBodyEl.querySelectorAll<HTMLElement>(".clash-side")) {
+    row.addEventListener("click", () => showClashSide(Number(row.dataset.key), row));
+  }
   clashPopEl.hidden = false;
+}
+
+/**
+ * Picks one side of the open collision: the element gets selected (so the
+ * attributes panel and the list follow it) and the camera flies to it, while
+ * the pair keeps its two colours — the row itself marks which side is being
+ * looked at. Selection colour matches the swatch, so the element does not
+ * change colour under the cursor and stays identifiable as "this side".
+ */
+function showClashSide(key: number, row: HTMLElement): void {
+  if (!Number.isFinite(key)) return;
+  for (const other of clashPopBodyEl.querySelectorAll(".clash-side")) {
+    other.classList.toggle("active", other === row);
+  }
+  const color = row === clashPopBodyEl.firstElementChild ? COLLISION_A : COLLISION_B;
+  act(() => {
+    vis.focus = null;
+    vis.forceShow.add(key); // страховка: сторона могла быть скрыта слоем типа
+  });
+  selection = [key];
+  viewer.setSelection([key], color);
+  list.setSelection([key]);
+  viewer.fitTo([key]);
+  void showProps(key);
 }
 
 /**
@@ -730,6 +758,9 @@ checks.setCategoryHandler((findings, status, isolate) => {
   // the two-colour + red-marker treatment instead of one flat highlight.
   const collisions = findings.filter((f) => f.pair != null && f.point);
   if (collisions.length > 0) {
+    // Цвет точки не несёт вердикта: красный — это «здесь тела пересеклись»,
+    // а нарушение это или мелкое пересечение, говорят категория и окно пары.
+    // Оранжевый под это не годится — он занят выделением элемента.
     showCollisions(collisions, isolate);
     return;
   }
