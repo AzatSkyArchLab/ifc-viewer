@@ -22,6 +22,8 @@ export class IfcParser {
       resolve: (v: any) => void;
       reject: (e: Error) => void;
       onProgress?: (done: number, total: number) => void;
+      /** Mesh batches streamed in before the final reply (geometry only). */
+      chunks: IfcMeshData[];
     }
   >();
   private models: IfcModel[] = [];
@@ -40,14 +42,21 @@ export class IfcParser {
   }
 
   private onMessage(msg: any): void {
-    if (msg?.cmd === "progress") {
-      this.pending.get(msg.id)?.onProgress?.(msg.done, msg.total);
+    const p = this.pending.get(msg?.id);
+    if (!p) return;
+    if (msg.cmd === "progress") {
+      p.onProgress?.(msg.done, msg.total);
       return;
     }
-    const p = this.pending.get(msg.id);
-    if (!p) return;
+    if (msg.cmd === "meshBatch") {
+      // Geometry arrives in batches so the worker can free each one; collect
+      // them here, where this thread's own address space holds them.
+      for (const mesh of msg.meshes as IfcMeshData[]) p.chunks.push(mesh);
+      p.onProgress?.(msg.done, msg.total);
+      return;
+    }
     this.pending.delete(msg.id);
-    if (msg.ok) p.resolve(msg.result);
+    if (msg.ok) p.resolve({ result: msg.result, chunks: p.chunks });
     else p.reject(new Error(msg.message || "worker error"));
   }
 
@@ -57,15 +66,16 @@ export class IfcParser {
     this.pending.clear();
   }
 
+  /** Resolves with the worker's reply plus any batches streamed before it. */
   private call(
     cmd: string,
     args: Record<string, unknown> = {},
     transfer: Transferable[] = [],
     onProgress?: (done: number, total: number) => void,
-  ): Promise<any> {
+  ): Promise<{ result: any; chunks: IfcMeshData[] }> {
     const id = ++this.seq;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject, onProgress });
+      this.pending.set(id, { resolve, reject, onProgress, chunks: [] });
       this.worker.postMessage({ id, cmd, ...args }, transfer);
     });
   }
@@ -93,8 +103,8 @@ export class IfcParser {
       },
       [data.buffer],
     );
-    this.models = res.models;
-    return res.model.modelId;
+    this.models = res.result.models;
+    return res.result.model.modelId;
   }
 
   /** Discards the worker and its dead WASM module, then starts a fresh one. */
@@ -120,20 +130,40 @@ export class IfcParser {
     return this.models.length > 0;
   }
 
-  getElements(): Promise<IfcElement[]> {
-    return this.call("elements");
+  async getElements(): Promise<IfcElement[]> {
+    return (await this.call("elements")).result;
   }
 
-  getStoreys(): Promise<IfcStorey[]> {
-    return this.call("storeys");
+  async getStoreys(): Promise<IfcStorey[]> {
+    return (await this.call("storeys")).result;
   }
 
-  /** Streams geometry from the worker; `onProgress` fires as meshes are built. */
-  getMeshes(onProgress?: (done: number, total: number) => void): Promise<IfcMeshData[]> {
-    return this.call("meshes", {}, [], onProgress);
+  /**
+   * Collects the geometry the worker streams out in batches, then recentres it
+   * on the model's bounding box (the worker can't do that — the box is only
+   * complete once the last mesh is out, and by then the batches have left).
+   * `onProgress` fires as batches arrive.
+   */
+  async getMeshes(
+    onProgress?: (done: number, total: number) => void,
+  ): Promise<IfcMeshData[]> {
+    const { result: bbox, chunks } = await this.call("meshes", {}, [], onProgress);
+    if (!Number.isFinite(bbox?.minX)) return chunks;
+    const ox = (bbox.minX + bbox.maxX) / 2;
+    const oy = (bbox.minY + bbox.maxY) / 2;
+    const oz = (bbox.minZ + bbox.maxZ) / 2;
+    for (const mesh of chunks) {
+      const p = mesh.positions;
+      for (let i = 0; i < p.length; i += 3) {
+        p[i] -= ox;
+        p[i + 1] -= oy;
+        p[i + 2] -= oz;
+      }
+    }
+    return chunks;
   }
 
-  getElementInfo(key: number): Promise<IfcElementInfo> {
-    return this.call("elementInfo", { key });
+  async getElementInfo(key: number): Promise<IfcElementInfo> {
+    return (await this.call("elementInfo", { key })).result;
   }
 }

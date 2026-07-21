@@ -46,10 +46,19 @@ async function init(wasmBase: string): Promise<void> {
   ready = true;
 }
 
+/** Past this upload size, coarser curves — tessellation is what runs out of memory. */
+const COARSE_CURVES_BYTES = 120 * 1024 * 1024;
+
 function open(data: Uint8Array, name: string, coordinateToOrigin: boolean): IfcModel {
-  const settings: { MEMORY_LIMIT: number; COORDINATE_TO_ORIGIN?: boolean } = {
-    MEMORY_LIMIT: 3_000_000_000,
-  };
+  const settings: {
+    MEMORY_LIMIT: number;
+    CIRCLE_SEGMENTS?: number;
+    COORDINATE_TO_ORIGIN?: boolean;
+  } = { MEMORY_LIMIT: 3_000_000_000 };
+  // Big models die with bad_alloc inside GetGeometry; halving the segments per
+  // circle (web-ifc's default is 12) cuts the tessellation these produce, which
+  // is the difference between a rough model and none at all.
+  if (data.byteLength > COARSE_CURVES_BYTES) settings.CIRCLE_SEGMENTS = 6;
   if (coordinateToOrigin) settings.COORDINATE_TO_ORIGIN = true;
   const modelId = api.OpenModel(data, settings);
   const model = { modelId, name };
@@ -169,14 +178,50 @@ function getStoreys(): IfcStorey[] {
 
 // ── Geometry (streamed, with progress) ───────────────────────────────────────
 
-/** Extracts all meshes in a common recentred frame; posts progress by count. */
-function getMeshes(id: number): { meshes: IfcMeshData[]; transfer: ArrayBuffer[] } {
-  const meshes: IfcMeshData[] = [];
+/** How many meshes to accumulate before shipping them out of the worker. */
+const MESH_BATCH = 300;
+
+/**
+ * Extracts all meshes and ships them to the main thread in batches.
+ *
+ * Batching is what makes a big model possible: holding every mesh here until
+ * the end piles hundreds of MB of typed arrays next to web-ifc's WASM heap and
+ * starves it (`bad_alloc` inside GetGeometry). Sending each batch with its
+ * buffers as Transferables hands the bytes to the main thread and frees them
+ * here, so the worker only ever holds the model plus one batch.
+ *
+ * Coordinates stay in the world frame — the common recentring offset is only
+ * known once every mesh is seen, so the final bbox is returned and the main
+ * thread applies it.
+ */
+function getMeshes(id: number): {
+  minX: number; minY: number; minZ: number;
+  maxX: number; maxY: number; maxZ: number;
+} {
+  let batch: IfcMeshData[] = [];
   const bbox = {
     minX: Infinity, minY: Infinity, minZ: Infinity,
     maxX: -Infinity, maxY: -Infinity, maxZ: -Infinity,
   };
   let done = 0;
+  let seenTotal = 0;
+
+  const flush = (): void => {
+    if (batch.length === 0) return;
+    const transfer: ArrayBuffer[] = [];
+    for (const mesh of batch) {
+      transfer.push(
+        mesh.positions.buffer as ArrayBuffer,
+        mesh.normals.buffer as ArrayBuffer,
+        mesh.indices.buffer as ArrayBuffer,
+      );
+    }
+    ctx.postMessage(
+      { cmd: "meshBatch", id, meshes: batch, done, total: seenTotal },
+      transfer,
+    );
+    batch = []; // buffers are gone from this thread now
+  };
 
   for (const { modelId } of models) {
     const push = (mesh: any, isSpace: boolean, total: number): void => {
@@ -219,7 +264,7 @@ function getMeshes(id: number): { meshes: IfcMeshData[]; transfer: ArrayBuffer[]
           }
         }
 
-        meshes.push({
+        batch.push({
           key: makeKey(modelId, mesh.expressID),
           space: isSpace,
           positions,
@@ -229,11 +274,10 @@ function getMeshes(id: number): { meshes: IfcMeshData[]; transfer: ArrayBuffer[]
         });
       }
       done++;
-      // Throttle: the parse is off the main thread, so these updates actually
-      // paint a moving bar there.
-      if (done % 100 === 0) {
-        ctx.postMessage({ cmd: "progress", id, done, total });
-      }
+      seenTotal = total;
+      // Ship the batch out (and free it here) as soon as it is full. This also
+      // drives the progress bar, which paints because the main thread is free.
+      if (batch.length >= MESH_BATCH) flush();
     };
 
     api.StreamAllMeshes(modelId, (mesh, _i, total) => push(mesh, false, total));
@@ -242,28 +286,8 @@ function getMeshes(id: number): { meshes: IfcMeshData[]; transfer: ArrayBuffer[]
     );
   }
 
-  const has = Number.isFinite(bbox.minX);
-  const offset = has
-    ? {
-        x: (bbox.minX + bbox.maxX) / 2,
-        y: (bbox.minY + bbox.maxY) / 2,
-        z: (bbox.minZ + bbox.maxZ) / 2,
-      }
-    : { x: 0, y: 0, z: 0 };
-  const transfer: ArrayBuffer[] = [];
-  for (const mesh of meshes) {
-    for (let i = 0; i < mesh.positions.length; i += 3) {
-      mesh.positions[i] -= offset.x;
-      mesh.positions[i + 1] -= offset.y;
-      mesh.positions[i + 2] -= offset.z;
-    }
-    transfer.push(
-      mesh.positions.buffer as ArrayBuffer,
-      mesh.normals.buffer as ArrayBuffer,
-      mesh.indices.buffer as ArrayBuffer,
-    );
-  }
-  return { meshes, transfer };
+  flush(); // whatever is left after the last full batch
+  return bbox;
 }
 
 // ── Properties of one element ─────────────────────────────────────────────────
@@ -431,11 +455,11 @@ ctx.onmessage = async (event: MessageEvent<Msg>): Promise<void> => {
       case "storeys":
         ctx.postMessage({ id: msg.id, ok: true, result: getStoreys() });
         break;
-      case "meshes": {
-        const { meshes, transfer } = getMeshes(msg.id);
-        ctx.postMessage({ id: msg.id, ok: true, result: meshes }, transfer);
+      case "meshes":
+        // Meshes stream out in batches; the reply carries only the final bbox,
+        // which the main thread uses to recentre what it collected.
+        ctx.postMessage({ id: msg.id, ok: true, result: getMeshes(msg.id) });
         break;
-      }
       case "elementInfo":
         ctx.postMessage({ id: msg.id, ok: true, result: await getElementInfo(msg.key!) });
         break;
