@@ -15,6 +15,8 @@ import {
   IFCBUILDINGSTOREY,
   IFCRELCONTAINEDINSPATIALSTRUCTURE,
   IFCRELAGGREGATES,
+  IFCRELFILLSELEMENT,
+  IFCRELVOIDSELEMENT,
 } from "web-ifc";
 import {
   makeKey,
@@ -158,18 +160,74 @@ function getStoreys(): IfcStorey[] {
       }
     }
 
+    // Storey of each element, and the parent to ask when it has none of its
+    // own. A stair flight sits in its stair, a mullion in its curtain wall, a
+    // door in the wall it fills — none of them are contained in a storey
+    // directly, and without this walk they read as «уровня нет» in the tree and
+    // in the attributes, while the model has them on a floor all along.
+    const storeyOf = new Map<number, number>();
+    for (const [sid, storey] of storeys) {
+      for (const key of storey.elementIds) storeyOf.set(expressOfKey(key), sid);
+    }
+    const parentOf = new Map<number, number>();
+
     const aggs = api.GetLineIDsWithType(modelId, IFCRELAGGREGATES);
     for (let i = 0; i < aggs.size(); i++) {
       const rel = api.GetLine(modelId, aggs.get(i), false);
       const pid = rel?.RelatingObject?.value;
-      const storey = typeof pid === "number" ? storeys.get(pid) : undefined;
-      if (!storey) continue;
+      if (typeof pid !== "number") continue;
       const related = rel?.RelatedObjects;
-      if (Array.isArray(related)) {
-        for (const r of related) {
-          const eid = r?.value;
-          if (typeof eid === "number") storey.elementIds.push(makeKey(modelId, eid));
+      if (!Array.isArray(related)) continue;
+      const storey = storeys.get(pid);
+      for (const r of related) {
+        const eid = r?.value;
+        if (typeof eid !== "number") continue;
+        if (storey) {
+          storey.elementIds.push(makeKey(modelId, eid));
+          storeyOf.set(eid, pid);
+        } else {
+          parentOf.set(eid, pid);
         }
+      }
+    }
+
+    // Filling → opening → воided element, so a window inherits its wall's floor.
+    const openingHost = new Map<number, number>();
+    const voids = api.GetLineIDsWithType(modelId, IFCRELVOIDSELEMENT);
+    for (let i = 0; i < voids.size(); i++) {
+      const rel = api.GetLine(modelId, voids.get(i), false);
+      const host = rel?.RelatingBuildingElement?.value;
+      const opening = rel?.RelatedOpeningElement?.value;
+      if (typeof host === "number" && typeof opening === "number") {
+        openingHost.set(opening, host);
+      }
+    }
+    const fills = api.GetLineIDsWithType(modelId, IFCRELFILLSELEMENT);
+    for (let i = 0; i < fills.size(); i++) {
+      const rel = api.GetLine(modelId, fills.get(i), false);
+      const opening = rel?.RelatingOpeningElement?.value;
+      const filling = rel?.RelatedBuildingElement?.value;
+      if (typeof opening !== "number" || typeof filling !== "number") continue;
+      const host = openingHost.get(opening);
+      if (host != null && !parentOf.has(filling)) parentOf.set(filling, host);
+    }
+
+    for (const [child] of parentOf) {
+      if (storeyOf.has(child)) continue;
+      // Walk up until a storey turns up; the hop limit is a cycle guard, not a
+      // depth assumption — a malformed file can point a parent back at a child.
+      let node: number | undefined = child;
+      const seen = new Set<number>();
+      for (let hop = 0; node != null && hop < 32; hop++) {
+        if (seen.has(node)) break;
+        seen.add(node);
+        const found = storeyOf.get(node);
+        if (found != null) {
+          storeys.get(found)?.elementIds.push(makeKey(modelId, child));
+          storeyOf.set(child, found);
+          break;
+        }
+        node = parentOf.get(node);
       }
     }
 
