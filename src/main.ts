@@ -8,6 +8,7 @@ import { ElementList } from "./ui/element-list.ts";
 import { PropertiesPanel } from "./ui/properties-panel.ts";
 import { TrmView } from "./ui/trm-view.ts";
 import { ChecksPanel, type CheckFinding } from "./ui/checks-panel.ts";
+import { fetchCoveringOffsets } from "./core/checks-api.ts";
 import { ModelTree } from "./ui/model-tree.ts";
 import { makeDetachable, makeVerticalResizer } from "./ui/pane-resizer.ts";
 import { History } from "./core/history.ts";
@@ -929,3 +930,32 @@ updateButtons();
 
 // Resolve the backend URL before checks can run, then invite a file.
 void loadConfig().then(() => setStatus("Откройте IFC-файл(ы)"));
+
+// ── IFC-54 debug hook ─────────────────────────────────────────────────────────
+// Раскрашивает точки покрытий по смещению над рельефом: зелёные — постоянная
+// высота (идёт по рельефу), красные — отклонение. Вызов из консоли:
+//   await window.__coverings()
+(window as unknown as { __coverings: () => Promise<unknown> }).__coverings =
+  async () => {
+    const data = await fetchCoveringOffsets(loadedModels.map((m) => m.file));
+    const pts: { x: number; y: number; z: number; label: string; color: number }[] = [];
+    for (const cover of data.coverings) {
+      for (const sample of cover.points) {
+        const dev = Math.abs(sample.offset_mm - cover.median_mm);
+        pts.push({
+          ...parser.toScenePoint(sample.p),
+          label: String(sample.offset_mm),
+          color: dev < 30 ? 0x22c55e : 0xef4444,
+        });
+      }
+    }
+    viewer.setDebugPoints(pts);
+    setStatus(
+      `IFC-54 дебаг: рельеф ${data.relief?.flat ? "плоский" : `перепад ${data.relief?.z_range_mm} мм`}` +
+        ` · покрытий ${data.coverings.length} · точек ${pts.length}`,
+    );
+    return data.coverings.map((c) => ({
+      name: c.name, rus: c.rus_name, status: c.status,
+      std: c.std_mm, median: c.median_mm, note: c.note,
+    }));
+  };

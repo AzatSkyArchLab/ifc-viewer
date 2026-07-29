@@ -444,6 +444,41 @@ export class Viewer {
     this.requestRender();
   }
 
+  /**
+   * Debug overlay for IFC-54: a coloured dot per sampled point, labelled with
+   * its offset above the relief. Green points sit at the covering's constant
+   * height (follow relief), red ones deviate — so a wrong covering shows its
+   * bad spots directly on the geometry. Reuses the marker layer, so any
+   * collision markers are replaced.
+   */
+  setDebugPoints(
+    points: { x: number; y: number; z: number; label: string; color: number }[],
+  ): void {
+    this.disposeMarkers();
+    if (points.length === 0) return;
+    const materials = new Map<number, THREE.SpriteMaterial>();
+    for (const p of points) {
+      let material = materials.get(p.color);
+      if (!material) {
+        material = new THREE.SpriteMaterial({
+          map: this.markerTexture(p.color),
+          sizeAttenuation: false,
+          depthTest: false,
+          transparent: true,
+        });
+        materials.set(p.color, material);
+      }
+      const sprite = new THREE.Sprite(material);
+      sprite.position.set(p.x, p.y, p.z);
+      sprite.scale.set(MARKER_SIZE * 0.6, MARKER_SIZE * 0.6, 1);
+      sprite.renderOrder = 999;
+      sprite.raycast = () => {};
+      this.markerGroup.add(sprite);
+      this.markerGroup.add(this.markerLabel(p, p.label));
+    }
+    this.requestRender();
+  }
+
   /** Ringed marker for the collision currently open; null clears the ring. */
   setActiveMarker(pair: number | null): void {
     if (this.activeMarker != null) {

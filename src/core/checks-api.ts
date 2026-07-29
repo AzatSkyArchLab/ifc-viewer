@@ -163,3 +163,26 @@ export async function exportIfcReport(files: File[], checkId: string): Promise<v
   a.remove();
   URL.revokeObjectURL(url);
 }
+
+/**
+ * IFC-54 debug: fetches covering-vs-relief offsets and returns per-covering
+ * sampled points. A developer overlay renders them on the geometry.
+ */
+export async function fetchCoveringOffsets(files: File[]): Promise<{
+  relief: { flat: boolean; z_range_mm: number } | null;
+  coverings: {
+    express_id: number; name: string | null; rus_name: string | null;
+    status: string; note: string; median_mm: number; std_mm: number;
+    points: { p: number[]; offset_mm: number }[];
+  }[];
+}> {
+  const form = new FormData();
+  for (const file of files) form.append("files", file, file.name);
+  const res = await fetch(`${apiBase()}${CHECKS_PATH}/debug/covering-relief`, {
+    method: "POST",
+    body: form,
+  });
+  if (!res.ok) throw new Error(`${res.status} ${(await res.text()).slice(0, 200)}`);
+  return res.json();
+}
+
