@@ -55,7 +55,11 @@ export interface IfcStorey {
   key: number;
   modelName: string;
   name: string | null;
-  /** Elevation attribute, if present (model units). */
+  /**
+   * Elevation, if present, in metres — the authored IfcBuildingStorey.Elevation
+   * scaled by the project length unit so it shares the scene's (metre) frame,
+   * where web-ifc places the geometry. Null when the storey has no elevation.
+   */
   elevation: number | null;
   /** Composite keys of elements directly contained in this storey. */
   elementIds: number[];

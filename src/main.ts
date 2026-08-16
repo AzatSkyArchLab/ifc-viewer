@@ -550,8 +550,9 @@ function refreshSections(storeys: IfcStorey[]): void {
     .map((s) => ({
       name: s.name,
       elevation: s.elevation,
-      // Storey elevation is IFC-Z; the scene is Y-up, so map it the same way the
-      // geometry was (toScenePoint) to get the slab height in scene units.
+      // Elevation is already in metres (scaled by the project length unit in the
+      // worker); the scene is Y-up, so toScenePoint applies the same axis swap +
+      // recentring offset the geometry got, landing the slab height in scene-Y.
       z: parser.toScenePoint([0, 0, s.elevation as number]).y,
     }));
   sections.setFloors(floors);

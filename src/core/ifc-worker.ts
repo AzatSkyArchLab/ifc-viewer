@@ -17,6 +17,9 @@ import {
   IFCRELAGGREGATES,
   IFCRELFILLSELEMENT,
   IFCRELVOIDSELEMENT,
+  IFCUNITASSIGNMENT,
+  IFCSIUNIT,
+  IFCCONVERSIONBASEDUNIT,
 } from "web-ifc";
 import {
   makeKey,
@@ -119,10 +122,63 @@ function toElement(modelId: number, modelName: string, expressID: number): IfcEl
 
 // ── Spatial structure (storeys) ──────────────────────────────────────────────
 
+/** SI length-prefix → metres per unit (MILLI → 0.001). */
+const SI_PREFIX: Record<string, number> = {
+  EXA: 1e18, PETA: 1e15, TERA: 1e12, GIGA: 1e9, MEGA: 1e6, KILO: 1e3,
+  HECTO: 1e2, DECA: 1e1, DECI: 1e-1, CENTI: 1e-2, MILLI: 1e-3, MICRO: 1e-6,
+  NANO: 1e-9, PICO: 1e-12, FEMTO: 1e-15, ATTO: 1e-18,
+};
+
+/**
+ * Metres per length unit for a model (millimetre model → 0.001). web-ifc scales
+ * all geometry to metres, but raw entity attributes (a storey's Elevation) keep
+ * the file's authored unit — so an mm model reports geometry at Y≈±6 while its
+ * Elevation reads 4650. Multiplying the attribute by this scale lands it back in
+ * the geometry's (metre) frame, which is what the section plane needs.
+ *
+ * The unit is resolved through the project's IfcUnitAssignment (not by grabbing
+ * the first IfcSIUnit — a file can declare several LENGTHUNIT SI units and only
+ * the one in the assignment is authoritative). An IfcSIUnit gives the scale from
+ * its Prefix (MILLI → 0.001); an imperial IfcConversionBasedUnit carries its
+ * size in metres in ConversionFactor. Falls back to 1 (metres) when unreadable.
+ */
+function lengthScale(modelId: number): number {
+  try {
+    const assigns = api.GetLineIDsWithType(modelId, IFCUNITASSIGNMENT);
+    for (let i = 0; i < assigns.size(); i++) {
+      const units = api.GetLine(modelId, assigns.get(i), false)?.Units;
+      if (!Array.isArray(units)) continue;
+      for (const ref of units) {
+        const id = ref?.value;
+        if (typeof id !== "number") continue;
+        const type = api.GetLineType(modelId, id);
+        if (type !== IFCSIUNIT && type !== IFCCONVERSIONBASEDUNIT) continue;
+        const u = api.GetLine(modelId, id, false);
+        if (scalar(u?.UnitType) !== "LENGTHUNIT") continue;
+        if (type === IFCSIUNIT) {
+          const prefix = u?.Prefix != null ? String(scalar(u.Prefix)) : "";
+          return prefix ? SI_PREFIX[prefix] ?? 1 : 1;
+        }
+        // IfcConversionBasedUnit: ConversionFactor → IfcMeasureWithUnit whose
+        // ValueComponent is the unit's size in the SI base (metres).
+        const factorId = u?.ConversionFactor?.value;
+        if (typeof factorId !== "number") continue;
+        const size = scalar(api.GetLine(modelId, factorId, false)?.ValueComponent);
+        if (typeof size === "number" && size > 0) return size;
+      }
+    }
+  } catch {
+    /* fall back to metres */
+  }
+  return 1;
+}
+
 function getStoreys(): IfcStorey[] {
   const result: IfcStorey[] = [];
   for (const { modelId, name: modelName } of models) {
     const storeys = new Map<number, IfcStorey>();
+    // web-ifc gives geometry in metres; scale the authored Elevation to match.
+    const scale = lengthScale(modelId);
 
     const ids = api.GetLineIDsWithType(modelId, IFCBUILDINGSTOREY);
     for (let i = 0; i < ids.size(); i++) {
@@ -140,7 +196,7 @@ function getStoreys(): IfcStorey[] {
         key: makeKey(modelId, id),
         modelName,
         name: name != null ? String(name) : null,
-        elevation: typeof elevation === "number" ? elevation : null,
+        elevation: typeof elevation === "number" ? elevation * scale : null,
         elementIds: [],
       });
     }
