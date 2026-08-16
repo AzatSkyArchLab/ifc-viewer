@@ -10,6 +10,7 @@ import { TrmView } from "./ui/trm-view.ts";
 import { ChecksPanel, type CheckFinding } from "./ui/checks-panel.ts";
 import { fetchCoveringOffsets } from "./core/checks-api.ts";
 import { ModelTree } from "./ui/model-tree.ts";
+import { SectionPanel, type FloorOption } from "./ui/section-panel.ts";
 import { makeDetachable, makeVerticalResizer } from "./ui/pane-resizer.ts";
 import { History } from "./core/history.ts";
 import {
@@ -45,6 +46,7 @@ const viewer = new Viewer(byId("viewer"));
 const list = new ElementList(byId("element-list"));
 const props = new PropertiesPanel(byId("properties"));
 const tree = new ModelTree(byId("model-tree"));
+const sections = new SectionPanel(byId("section-panel"));
 const trm = new TrmView(
   byId("trm-overlay"),
   byId("trm-title"),
@@ -534,6 +536,31 @@ const RETRY_BYTES = 120 * 1024 * 1024;
 const GEOMETRY_RETRIES = 8;
 
 /**
+ * Re-ranges the section panel for the model just loaded. Always resets first, so
+ * a plane left over from the previous model never keeps clipping the new one;
+ * then, when there is 3D geometry, rebuilds the floor list and slider ranges from
+ * the scene bounds. Heavy / checks-only loads (no geometry) get just the reset.
+ */
+function refreshSections(storeys: IfcStorey[]): void {
+  sections.reset();
+  const bounds = viewer.getModelBounds();
+  if (!bounds) return; // no geometry in the scene — nothing to range
+  const floors: FloorOption[] = storeys
+    .filter((s) => s.elevation != null)
+    .map((s) => ({
+      name: s.name,
+      elevation: s.elevation,
+      // Storey elevation is IFC-Z; the scene is Y-up, so map it the same way the
+      // geometry was (toScenePoint) to get the slab height in scene units.
+      z: parser.toScenePoint([0, 0, s.elevation as number]).y,
+    }));
+  sections.setFloors(floors);
+  const halfExtent =
+    0.5 * Math.hypot(bounds.max.x - bounds.min.x, bounds.max.z - bounds.min.z);
+  sections.setBounds(bounds.min.y, bounds.max.y, halfExtent);
+}
+
+/**
  * Loads and displays one or more IFC files. `safe` re-runs with
  * COORDINATE_TO_ORIGIN after a first-attempt abort (the common cause is a
  * georeferenced model whose far-from-origin coordinates overflow web-ifc's
@@ -647,6 +674,7 @@ async function openFiles(files: File[], safe = false): Promise<void> {
     setSelection([]);
     props.clear();
     updateViewButton();
+    refreshSections(storeys); // re-range the cut sliders; clear any stale plane
     const label = files.length === 1 ? files[0].name : `моделей: ${files.length}`;
     setProgress(1);
     modelSummary = `${label} · элементов: ${elements.length}`;
@@ -711,6 +739,7 @@ function checksOnly(files: File[], notice: string, status: string): void {
   setSelection([]);
   props.clear();
   updateViewButton();
+  sections.reset(); // no 3D here — make sure no stale cut plane lingers
   setNotice(notice);
   setStatus(status);
 }
@@ -749,6 +778,10 @@ list.setTypeVisibilityHandler((modelId, typeLower, visible) => {
   else act(mutate);
 });
 viewer.setSelectHandler((key, additive) => select(key, additive));
+
+// Section panel → clipping planes. The panel owns the config; the viewer just
+// (re)builds the plane list on every change.
+sections.setChangeHandler((cfg) => viewer.setSections(cfg));
 
 checks.setModelsGetter(() => loadedModels);
 viewer.setMarkerHandler((pair) => openClashPopup(pair));

@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import type { IfcMeshData } from "../core/types.ts";
+import type { IfcMeshData, SectionConfig } from "../core/types.ts";
 
 /**
  * Element selection callback fired by a click in the scene.
@@ -127,6 +127,13 @@ export class Viewer {
   private _meshBox = new THREE.Box3();
   private _scratchVec4 = new THREE.Vector4();
 
+  /**
+   * Whole-model bounds (scene space, Y-up), cached so a section-slider drag does
+   * not recompute the batch bounding box on every change. Invalidated on clear.
+   */
+  private _bounds: { min: THREE.Vector3; max: THREE.Vector3 } | null = null;
+  private _boundsDirty = true;
+
   /** On-demand rendering: only draw a frame when the scene actually changed. */
   private needsRender = true;
   /** Pixel ratio at rest (crisp) vs. while the camera moves (fast); see animate. */
@@ -149,6 +156,9 @@ export class Viewer {
     this.highRatio = Math.min(window.devicePixelRatio, 2);
     this.renderer.setPixelRatio(this.highRatio);
     this.renderer.setSize(container.clientWidth, container.clientHeight);
+    // Section planes are per-material (material.clippingPlanes), so local
+    // clipping has to be enabled once for the whole renderer.
+    this.renderer.localClippingEnabled = true;
     container.appendChild(this.renderer.domElement);
 
     this.scene = new THREE.Scene();
@@ -726,6 +736,7 @@ export class Viewer {
     this.modelGroup.add(this.markerGroup);
 
     this.solids = this.transparent = this.ghostSolid = this.ghostTrans = null;
+    this._boundsDirty = true; // next load re-derives the section-slider range
     this.spaceOutlines.clear();
     this.byKey.clear();
     this.solidKey = [];
@@ -735,6 +746,79 @@ export class Viewer {
     this.transSpace = new Uint8Array(0);
     this.solidColorCache = new Int32Array(0);
     this.transColorCache = new Float32Array(0);
+  }
+
+  // ── Sections (cutting planes) ────────────────────────────────────────────────
+
+  /**
+   * Whole-model bounds in scene space (Y-up), or null when nothing is loaded.
+   * The section panel ranges its sliders off this: Y for the plan-cut height,
+   * the XZ half-extent for the vertical section's slide. Cached (invalidated on
+   * clear) so a slider drag never recomputes the batch bounding box.
+   */
+  getModelBounds(): { min: THREE.Vector3; max: THREE.Vector3 } | null {
+    if (this._boundsDirty) {
+      const box = this.modelBounds(this._box);
+      this._bounds = box.isEmpty()
+        ? null
+        : { min: box.min.clone(), max: box.max.clone() };
+      this._boundsDirty = false;
+    }
+    return this._bounds
+      ? { min: this._bounds.min.clone(), max: this._bounds.max.clone() }
+      : null;
+  }
+
+  /**
+   * (Re)builds the list of active section planes from the enabled sections and
+   * assigns it to the three batch materials (solid / transparent / ghost), so the
+   * cut applies to everything the viewer draws — including highlighted and
+   * ghosted geometry, which reuse these same shared materials. Empty when neither
+   * section is on.
+   *
+   * A THREE.Plane(normal, constant) keeps the +normal half-space: it discards a
+   * fragment where normal·worldPos + constant < 0.
+   *
+   * HORIZONTAL — the scene is Y-up, so the plan cut is a Y-normal plane and
+   * `z` is the cut height along scene-Y. Default keeps geometry BELOW the cut:
+   * normal (0,−1,0), constant = z ⟹ distance = z − worldY ≥ 0 ⟺ worldY ≤ z.
+   * Flip negates both normal and constant ⟹ keeps worldY ≥ z (above).
+   *
+   * VERTICAL — a plane containing the Y axis whose normal rotates in the ground
+   * (XZ) plane: normal (cosθ, 0, sinθ), θ from angleDeg (0° → +X). The plane
+   * passes through the model-centre XZ shifted by `offset` along that normal;
+   * constant = −(normal·planePoint). Flip negates normal and constant.
+   */
+  setSections(cfg: SectionConfig): void {
+    const planes: THREE.Plane[] = [];
+
+    if (cfg.horizontal.on) {
+      const s = cfg.horizontal.flip ? -1 : 1;
+      planes.push(
+        new THREE.Plane(new THREE.Vector3(0, -s, 0), s * cfg.horizontal.z),
+      );
+    }
+
+    if (cfg.vertical.on) {
+      const b = this.getModelBounds();
+      const cx = b ? (b.min.x + b.max.x) / 2 : 0;
+      const cz = b ? (b.min.z + b.max.z) / 2 : 0;
+      const a = (cfg.vertical.angleDeg * Math.PI) / 180;
+      const s = cfg.vertical.flip ? -1 : 1;
+      const nx = Math.cos(a) * s;
+      const nz = Math.sin(a) * s;
+      // planePoint = centre + offset·normal (normal is unit); with flip folded
+      // into the normal the offset slides along the shown side either way.
+      const constant = -(nx * cx + nz * cz) - cfg.vertical.offset * s;
+      planes.push(new THREE.Plane(new THREE.Vector3(nx, 0, nz), constant));
+    }
+
+    // The renderer recompiles the material shader when the plane count changes,
+    // so no manual needsUpdate is required here.
+    for (const mat of [this.solidMat, this.transMat, this.ghostMat]) {
+      mat.clippingPlanes = planes;
+    }
+    this.requestRender();
   }
 
   // ── Internal ─────────────────────────────────────────────────────────────────

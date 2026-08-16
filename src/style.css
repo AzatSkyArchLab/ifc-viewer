@@ -1360,6 +1360,122 @@ body {
   display: none;
 }
 
+/* ── Section (cutting) planes ─────────────────────────────────────────────── */
+.sections {
+  margin: 8px 8px 0;
+  flex: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+
+.sections > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 7px 8px;
+  font-weight: 600;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-faint);
+}
+
+.sections > summary::-webkit-details-marker {
+  display: none;
+}
+
+.sections > summary::before {
+  content: "▸ ";
+  font-size: 9px;
+}
+
+.sections[open] > summary::before {
+  content: "▾ ";
+}
+
+.sections > summary:hover {
+  color: var(--text-soft);
+}
+
+.section-panel {
+  padding: 4px 8px 8px;
+  font-size: 12px;
+}
+
+.sec-group + .sec-group {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+/* Checkbox rows (section on/off, and the nested "перевернуть"). */
+.sec-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  padding: 2px 0;
+  color: var(--text);
+}
+
+.sec-check.sec-sub {
+  padding-left: 2px;
+  color: var(--text-soft);
+}
+
+.sec-check input {
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+/* The controls under a section's on/off checkbox. */
+.sec-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 0 2px 20px;
+}
+
+.sec-body.sec-off {
+  opacity: 0.45;
+}
+
+.sec-field {
+  display: grid;
+  grid-template-columns: 58px 1fr auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.sec-name {
+  color: var(--text-soft);
+}
+
+.sec-range {
+  width: 100%;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.sec-select {
+  min-width: 0;
+  padding: 3px 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.sec-val {
+  min-width: 42px;
+  text-align: right;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
 .filter {
   margin: 8px;
   padding: 6px 10px;

@@ -61,6 +61,23 @@ export interface IfcStorey {
   elementIds: number[];
 }
 
+/**
+ * State of the two section (cutting) planes, owned by the section panel and
+ * handed to the viewer. Plain data — no three.js types — so it stays part of the
+ * core↔viewer↔UI contract.
+ *
+ * The scene is Y-up (web-ifc emits Y-up geometry; see IfcParser.toScenePoint), so
+ * the "horizontal" plan cut runs along scene-Y and `z` is that cut height in
+ * scene units; the "vertical" section is a plane containing the Y axis whose
+ * normal rotates in the ground (XZ) plane.
+ */
+export interface SectionConfig {
+  /** Plan cut — a horizontal plane; `z` is the cut height along the scene up-axis. */
+  horizontal: { on: boolean; z: number; flip: boolean };
+  /** Section cut — a vertical plane; `offset` slides it, `angleDeg` rotates its normal. */
+  vertical: { on: boolean; offset: number; angleDeg: number; flip: boolean };
+}
+
 /** A single property inside a property set. */
 export interface IfcProperty {
   name: string;
