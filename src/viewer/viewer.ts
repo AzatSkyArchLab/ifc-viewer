@@ -22,6 +22,18 @@ const RING_FACTOR = 1.5;
 /** Height of a collision number plate, in the same sprite units. */
 const LABEL_SIZE = 0.028;
 
+// ── Section capping ────────────────────────────────────────────────────────────
+/** Muted mid-grey poché — the filled cut cross-section. */
+const SECTION_FILL_COLOR = 0x8a8f98;
+/** Dark near-black — the thick outline around the cut. */
+const SECTION_OUTLINE_COLOR = 0x15181c;
+/** Cut-outline half-thickness, in device pixels (screen-space edge kernel). */
+const SECTION_OUTLINE_PX = 1.4;
+/** Extra camera layer carrying only the opaque solids, for the stencil pass. */
+const STENCIL_LAYER = 1;
+/** Camera layer carrying only the cap quads, so they render in isolation. */
+const CAP_LAYER = 2;
+
 /** Where an element's geometry lives inside the batches (one entry per geometry). */
 interface InstRef {
   batch: "solid" | "trans";
@@ -29,6 +41,20 @@ interface InstRef {
   id: number;
   /** geometryId, for per-geometry bounds (getBoundingBoxAt). */
   geoId: number;
+}
+
+/**
+ * One section plane's capping resources. `backMat`/`frontMat` are swapped onto
+ * the solid BatchedMesh to write the stencil (clip = this plane only); `mesh` is
+ * the quad drawn on the plane, filled where the stencil marks solid interior
+ * (`fillMat`) or as a white silhouette into the mask target (`maskMat`).
+ */
+interface CapPlane {
+  backMat: THREE.MeshBasicMaterial;
+  frontMat: THREE.MeshBasicMaterial;
+  fillMat: THREE.MeshBasicMaterial;
+  maskMat: THREE.MeshBasicMaterial;
+  mesh: THREE.Mesh;
 }
 
 /**
@@ -134,6 +160,22 @@ export class Viewer {
   private _bounds: { min: THREE.Vector3; max: THREE.Vector3 } | null = null;
   private _boundsDirty = true;
 
+  // ── Section capping (stencil fill + screen-space outline) ────────────────────
+  /** Per-plane cap resources; empty when no section is on. */
+  private caps: CapPlane[] = [];
+  /** Holds the cap quads (on CAP_LAYER, so the normal render skips them). */
+  private capGroup = new THREE.Group();
+  /** True once caps are built for the active planes and there is solid geometry. */
+  private capsOn = false;
+  /** Draw the thick cut outline (screen-space edge of the fill silhouette). */
+  private outlineOn = true;
+  /** Off-screen silhouette of the caps, edge-detected for the outline. */
+  private maskRT: THREE.WebGLRenderTarget | null = null;
+  private outlineScene: THREE.Scene | null = null;
+  private outlineMat: THREE.ShaderMaterial | null = null;
+  private readonly orthoCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  private _bufSize = new THREE.Vector2();
+
   /** On-demand rendering: only draw a frame when the scene actually changed. */
   private needsRender = true;
   /** Pixel ratio at rest (crisp) vs. while the camera moves (fast); see animate. */
@@ -152,6 +194,8 @@ export class Viewer {
     this.renderer = new THREE.WebGLRenderer({
       antialias: true,
       powerPreference: "high-performance",
+      // Section capping fills the cut cross-section with a stencil pass.
+      stencil: true,
     });
     this.highRatio = Math.min(window.devicePixelRatio, 2);
     this.renderer.setPixelRatio(this.highRatio);
@@ -165,6 +209,9 @@ export class Viewer {
     this.scene.background = new THREE.Color(0xf4f5f7);
     this.scene.add(this.modelGroup);
     this.modelGroup.add(this.markerGroup);
+    // Cap quads live directly under the scene on their own layer, so the model
+    // group's clear/visibility logic never touches them.
+    this.scene.add(this.capGroup);
 
     this.camera = new THREE.PerspectiveCamera(
       60,
@@ -735,6 +782,10 @@ export class Viewer {
     this.keyColors.clear();
     this.modelGroup.add(this.markerGroup);
 
+    // Drop any active caps — their planes belong to the model being cleared.
+    this.disposeCaps();
+    this.capsOn = false;
+
     this.solids = this.transparent = this.ghostSolid = this.ghostTrans = null;
     this._boundsDirty = true; // next load re-derives the section-slider range
     this.spaceOutlines.clear();
@@ -818,7 +869,258 @@ export class Viewer {
     for (const mat of [this.solidMat, this.transMat, this.ghostMat]) {
       mat.clippingPlanes = planes;
     }
+    // Rebuild the stencil caps for these planes (fills the cut cross-section).
+    this.buildCaps(planes);
     this.requestRender();
+  }
+
+  /**
+   * (Re)builds the per-plane cap resources for the active section planes. Each
+   * cap gets: two stencil-writing materials swapped onto the solid batch during
+   * the render (clip = its own plane, back faces increment / front faces
+   * decrement, so a net non-zero marks solid interior at the plane), a grey fill
+   * quad (clip = the *other* planes, drawn where stencil ≠ 0), and a white twin
+   * of that quad used to render the outline silhouette. Disposes the previous set
+   * first; leaves capping off when there are no planes or no solid geometry.
+   */
+  private buildCaps(planes: THREE.Plane[]): void {
+    this.disposeCaps();
+    if (planes.length === 0 || !this.solids) {
+      this.capsOn = false;
+      return;
+    }
+    // The stencil pass renders only the solids — give them a private layer.
+    this.solids.layers.enable(STENCIL_LAYER);
+
+    const b = this.getModelBounds();
+    const center = b
+      ? new THREE.Vector3(
+          (b.min.x + b.max.x) / 2,
+          (b.min.y + b.max.y) / 2,
+          (b.min.z + b.max.z) / 2,
+        )
+      : new THREE.Vector3();
+    const diag = b ? b.min.distanceTo(b.max) : 1;
+    const size = Math.max(diag * 2, 1); // quad big enough to cover the whole cut
+    const zAxis = new THREE.Vector3(0, 0, 1);
+
+    for (let i = 0; i < planes.length; i++) {
+      const plane = planes[i];
+      const others = planes.filter((_, j) => j !== i);
+
+      const stencilBase: THREE.MeshBasicMaterialParameters = {
+        depthWrite: false,
+        depthTest: false,
+        colorWrite: false,
+        stencilWrite: true,
+        stencilFunc: THREE.AlwaysStencilFunc,
+        clippingPlanes: [plane],
+      };
+      const backMat = new THREE.MeshBasicMaterial({
+        ...stencilBase,
+        side: THREE.BackSide,
+        stencilFail: THREE.IncrementWrapStencilOp,
+        stencilZFail: THREE.IncrementWrapStencilOp,
+        stencilZPass: THREE.IncrementWrapStencilOp,
+      });
+      const frontMat = new THREE.MeshBasicMaterial({
+        ...stencilBase,
+        side: THREE.FrontSide,
+        stencilFail: THREE.DecrementWrapStencilOp,
+        stencilZFail: THREE.DecrementWrapStencilOp,
+        stencilZPass: THREE.DecrementWrapStencilOp,
+      });
+      // The cap fills only where the stencil is non-zero, then clears it (Replace
+      // ref 0) so the next plane starts clean.
+      const capBase: THREE.MeshBasicMaterialParameters = {
+        side: THREE.DoubleSide,
+        clippingPlanes: others,
+        stencilWrite: true,
+        stencilRef: 0,
+        stencilFunc: THREE.NotEqualStencilFunc,
+        stencilFail: THREE.ReplaceStencilOp,
+        stencilZFail: THREE.ReplaceStencilOp,
+        stencilZPass: THREE.ReplaceStencilOp,
+      };
+      const fillMat = new THREE.MeshBasicMaterial({
+        ...capBase,
+        color: SECTION_FILL_COLOR,
+      });
+      const maskMat = new THREE.MeshBasicMaterial({
+        ...capBase,
+        color: 0xffffff,
+        depthTest: false,
+        depthWrite: false,
+      });
+
+      const mesh = new THREE.Mesh(new THREE.PlaneGeometry(size, size), fillMat);
+      mesh.layers.set(CAP_LAYER);
+      mesh.visible = false;
+      mesh.frustumCulled = false;
+      mesh.quaternion.setFromUnitVectors(zAxis, plane.normal.clone().normalize());
+      // Sit the quad on the plane at the model-centre's projection onto it.
+      mesh.position
+        .copy(center)
+        .addScaledVector(plane.normal, -plane.distanceToPoint(center));
+      this.capGroup.add(mesh);
+
+      this.caps.push({ backMat, frontMat, fillMat, maskMat, mesh });
+    }
+    this.capsOn = true;
+  }
+
+  /** Frees the current cap set (materials + quad geometry). */
+  private disposeCaps(): void {
+    for (const cap of this.caps) {
+      this.capGroup.remove(cap.mesh);
+      cap.mesh.geometry.dispose();
+      cap.backMat.dispose();
+      cap.frontMat.dispose();
+      cap.fillMat.dispose();
+      cap.maskMat.dispose();
+    }
+    this.caps = [];
+  }
+
+  // ── Section cap rendering (called from the render loop) ───────────────────────
+
+  /**
+   * Full frame when at least one cut cross-section is filled. First draws the
+   * scene as usual (cap quads sit on CAP_LAYER, so this layer-0 pass skips them),
+   * then stencil-fills each cap into the same buffer, then lays the thick outline
+   * over the top. Restores the default render state so the plain path is
+   * unaffected on the next frame.
+   */
+  private renderWithCaps(): void {
+    const r = this.renderer;
+    const cam = this.camera;
+    const bg = this.scene.background;
+
+    // Normal scene, with its background clear.
+    cam.layers.set(0);
+    r.autoClear = true;
+    r.render(this.scene, cam);
+
+    // A Color scene.background forces a full clear on every render() call, which
+    // would wipe the frame (and the stencil) on each cap sub-pass — drop it while
+    // capping and accumulate into the buffer instead.
+    this.scene.background = null;
+    r.autoClear = false;
+    this.fillCaps(false);
+    if (this.outlineOn) this.renderOutline();
+
+    this.scene.background = bg;
+    cam.layers.set(0);
+    r.autoClear = true;
+  }
+
+  /**
+   * Runs the stencil-cap sequence for every plane, into whatever buffer is bound.
+   * Per plane: clear the stencil, write it from the solids (back then front,
+   * material swapped in), then draw the plane's quad (grey fill, or the white
+   * `mask` silhouette). The solid batch's material is restored before the quad,
+   * so the normal render on the next frame is untouched.
+   */
+  private fillCaps(mask: boolean): void {
+    const r = this.renderer;
+    const cam = this.camera;
+    const solids = this.solids;
+    if (!solids) return;
+    for (const cap of this.caps) {
+      r.clearStencil();
+      cam.layers.set(STENCIL_LAYER);
+      solids.material = cap.backMat;
+      r.render(this.scene, cam);
+      solids.material = cap.frontMat;
+      r.render(this.scene, cam);
+      solids.material = this.solidMat;
+      cam.layers.set(CAP_LAYER);
+      cap.mesh.material = mask ? cap.maskMat : cap.fillMat;
+      cap.mesh.visible = true;
+      r.render(this.scene, cam);
+      cap.mesh.visible = false;
+    }
+  }
+
+  /**
+   * Draws the thick cut outline: render the caps as a white silhouette into an
+   * off-screen target, then composite a screen-space edge of that silhouette over
+   * the frame. Screen-space keeps the line uniformly thick along the true section
+   * contour, including prismatic walls where a geometric offset would produce no
+   * edge.
+   */
+  private renderOutline(): void {
+    const r = this.renderer;
+    r.getDrawingBufferSize(this._bufSize);
+    this.ensureOutline();
+
+    const prevColor = r.getClearColor(new THREE.Color());
+    const prevAlpha = r.getClearAlpha();
+    r.setRenderTarget(this.maskRT);
+    r.autoClear = false;
+    r.setClearColor(0x000000, 1);
+    r.clear(true, true, true);
+    this.fillCaps(true);
+    r.setRenderTarget(null);
+    r.setClearColor(prevColor, prevAlpha);
+
+    const mat = this.outlineMat!;
+    mat.uniforms.uMask.value = this.maskRT!.texture;
+    mat.uniforms.uTexel.value.set(1 / this._bufSize.x, 1 / this._bufSize.y);
+    r.autoClear = false;
+    r.render(this.outlineScene!, this.orthoCam);
+  }
+
+  /** Lazily builds (and resizes) the mask target and the full-screen edge quad. */
+  private ensureOutline(): void {
+    const w = Math.max(1, Math.floor(this._bufSize.x));
+    const h = Math.max(1, Math.floor(this._bufSize.y));
+    if (!this.maskRT) {
+      this.maskRT = new THREE.WebGLRenderTarget(w, h, {
+        depthBuffer: true,
+        stencilBuffer: true,
+        minFilter: THREE.NearestFilter,
+        magFilter: THREE.NearestFilter,
+      });
+    } else if (this.maskRT.width !== w || this.maskRT.height !== h) {
+      this.maskRT.setSize(w, h);
+    }
+    if (this.outlineScene) return;
+    this.outlineMat = new THREE.ShaderMaterial({
+      uniforms: {
+        uMask: { value: null },
+        uTexel: { value: new THREE.Vector2() },
+        uColor: { value: new THREE.Color(SECTION_OUTLINE_COLOR) },
+        uRadius: { value: SECTION_OUTLINE_PX },
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`,
+      fragmentShader: `
+        uniform sampler2D uMask;
+        uniform vec2 uTexel;
+        uniform vec3 uColor;
+        uniform float uRadius;
+        varying vec2 vUv;
+        void main() {
+          float mn = 1.0, mx = 0.0;
+          for (int i = -2; i <= 2; i++) {
+            for (int j = -2; j <= 2; j++) {
+              float s = texture2D(uMask, vUv + vec2(float(i), float(j)) * uTexel * uRadius).r;
+              mn = min(mn, s); mx = max(mx, s);
+            }
+          }
+          if (mx < 0.5 || mn > 0.5) discard; // kernel does not straddle the edge
+          gl_FragColor = vec4(uColor, 1.0);
+        }`,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+    });
+    const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.outlineMat);
+    quad.frustumCulled = false;
+    this.outlineScene = new THREE.Scene();
+    this.outlineScene.add(quad);
   }
 
   // ── Internal ─────────────────────────────────────────────────────────────────
@@ -970,7 +1272,8 @@ export class Viewer {
     // camera is still moving, so the loop keeps drawing until it settles.
     this.controls.update();
     this.applyRenderQuality(this.needsRender);
-    this.renderer.render(this.scene, this.camera);
+    if (this.capsOn && this.solids) this.renderWithCaps();
+    else this.renderer.render(this.scene, this.camera);
     this.updateStats();
   };
 
