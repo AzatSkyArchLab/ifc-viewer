@@ -402,6 +402,11 @@ function getMeshes(
           indices: new Uint32Array(indices),
           color: { r: pg.color.x, g: pg.color.y, b: pg.color.z, a: pg.color.w },
         });
+        // Free the web-ifc geometry now its vertex/index data is copied out.
+        // Without this the WASM heap keeps EVERY geometry of the whole model at
+        // once, and a big file dies with bad_alloc inside GetGeometry — the
+        // model plus one geometry is all the worker ever needs to hold.
+        geom.delete();
       }
       done++;
       seenTotal = total;
