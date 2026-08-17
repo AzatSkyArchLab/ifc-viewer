@@ -56,6 +56,11 @@ const STENCIL_LAYER = 1;
 /** Camera layer carrying only the cap quads, so they render in isolation. */
 const CAP_LAYER = 2;
 
+/** Shared empties that replace a mesh's source buffers once the batches own a
+ *  copy — lets loadMeshes free the input model as it uploads it. */
+const EMPTY_POS = new Float32Array(0);
+const EMPTY_IDX = new Uint32Array(0);
+
 /** Where an element's geometry lives inside the batches (one entry per geometry). */
 interface InstRef {
   batch: "solid" | "trans";
@@ -441,6 +446,14 @@ export class Viewer {
         }
       }
       this.byKey.set(data.key, refs);
+
+      // The batches (and the ghost twins) now hold their own copy of this mesh,
+      // so release the source typed arrays right away. Without this the input
+      // model and the GPU batches both hold the whole geometry at once, and a
+      // big file peaks near the tab's memory ceiling during the upload.
+      data.positions = EMPTY_POS;
+      data.normals = EMPTY_POS;
+      data.indices = EMPTY_IDX;
     }
 
     this.groundToModel();
