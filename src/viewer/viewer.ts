@@ -8,6 +8,28 @@ import type { IfcMeshData, SectionConfig } from "../core/types.ts";
  */
 export type SelectHandler = (expressID: number | null, additive: boolean) => void;
 
+/** A point/vector in scene space, as handed to applyViewpoint. */
+interface Vec3 {
+  x: number;
+  y: number;
+  z: number;
+}
+
+/** BCF camera pose in SCENE space (the host maps IFC world → scene first). */
+export interface BcfSceneCamera {
+  position: Vec3;
+  direction: Vec3; // view direction (unit)
+  up: Vec3; // up vector (unit)
+  fovDeg: number | null; // perspective: vertical field of view, degrees
+}
+
+/** BCF clipping plane in SCENE space. `normal` is the BCF direction (the side
+ *  it points at is hidden); `point` is a point on the plane. */
+export interface BcfSceneClip {
+  normal: Vec3;
+  point: Vec3;
+}
+
 const HIGHLIGHT_COLOR = new THREE.Color(0xff8800);
 /** Translucent colour for IfcSpace room volumes. */
 const SPACE_COLOR = new THREE.Color(0x33aaff);
@@ -864,6 +886,16 @@ export class Viewer {
       planes.push(new THREE.Plane(new THREE.Vector3(nx, 0, nz), constant));
     }
 
+    this.applyPlanes(planes);
+  }
+
+  /**
+   * Assigns a plane list to the three batch materials (solid / transparent /
+   * ghost) and rebuilds the stencil caps for it, so the cut applies to
+   * everything the viewer draws. Shared by the section panel (setSections) and
+   * BCF viewpoint restore (applyViewpoint). Empty clears the cut.
+   */
+  private applyPlanes(planes: THREE.Plane[]): void {
     // The renderer recompiles the material shader when the plane count changes,
     // so no manual needsUpdate is required here.
     for (const mat of [this.solidMat, this.transMat, this.ghostMat]) {
@@ -872,6 +904,68 @@ export class Viewer {
     // Rebuild the stencil caps for these planes (fills the cut cross-section).
     this.buildCaps(planes);
     this.requestRender();
+  }
+
+  /**
+   * Restores a BCF viewpoint: places the camera at the saved pose and applies
+   * the saved section cuts. Both are given in SCENE space (the host maps IFC
+   * world coordinates through the same swap + recentring the geometry used).
+   *
+   * `camera` null keeps the current view (a viewpoint may carry only cuts).
+   * `clips` fully defines the section state for this viewpoint — an empty list
+   * clears any cut, since restoring a viewpoint takes over what the model shows.
+   */
+  applyViewpoint(camera: BcfSceneCamera | null, clips: BcfSceneClip[]): void {
+    if (camera) this.applyCamera(camera);
+    this.applyPlanes(clips.map((c) => this.clipPlane(c)));
+  }
+
+  /** Points the camera along a BCF pose (scene space), framing the model depth. */
+  private applyCamera(cam: BcfSceneCamera): void {
+    const pos = new THREE.Vector3(cam.position.x, cam.position.y, cam.position.z);
+    const dir = new THREE.Vector3(cam.direction.x, cam.direction.y, cam.direction.z);
+    if (dir.lengthSq() < 1e-12) dir.set(0, 0, -1);
+    dir.normalize();
+    const up = new THREE.Vector3(cam.up.x, cam.up.y, cam.up.z);
+    if (up.lengthSq() < 1e-12) up.set(0, 1, 0);
+
+    const b = this.getModelBounds();
+    const center = b
+      ? new THREE.Vector3(
+          (b.min.x + b.max.x) / 2,
+          (b.min.y + b.max.y) / 2,
+          (b.min.z + b.max.z) / 2,
+        )
+      : pos.clone().add(dir);
+    const diag = b ? b.min.distanceTo(b.max) : 1;
+    // Orbit pivot: as far down the view ray as the model centre, so later
+    // orbiting turns around the model rather than a point on the lens.
+    let dist = center.clone().sub(pos).dot(dir);
+    if (!(dist > 1e-3)) dist = Math.max(diag, 1);
+
+    this.camera.up.copy(up).normalize();
+    this.camera.position.copy(pos);
+    this.controls.target.copy(pos).addScaledVector(dir, dist);
+    if (cam.fovDeg && cam.fovDeg > 1 && cam.fovDeg < 179) {
+      this.camera.fov = cam.fovDeg;
+    }
+    this.camera.near = Math.max(diag / 1000, 0.01);
+    this.camera.far = Math.max(diag * 100, dist * 4);
+    this.camera.updateProjectionMatrix();
+    this.controls.update();
+  }
+
+  /**
+   * A BCF clipping plane (scene space) as a THREE.Plane. BCF hides the geometry
+   * on the +normal side; THREE keeps the +normal half-space, so the plane normal
+   * is the opposite of the BCF direction.
+   */
+  private clipPlane(c: BcfSceneClip): THREE.Plane {
+    const n = new THREE.Vector3(-c.normal.x, -c.normal.y, -c.normal.z);
+    if (n.lengthSq() < 1e-12) n.set(0, -1, 0);
+    n.normalize();
+    const p = new THREE.Vector3(c.point.x, c.point.y, c.point.z);
+    return new THREE.Plane().setFromNormalAndCoplanarPoint(n, p);
   }
 
   /**

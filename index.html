@@ -26,6 +26,10 @@
             Открыть TRM
             <input id="trm-input" type="file" hidden />
           </label>
+          <label class="btn">
+            Открыть BCF
+            <input id="bcf-input" type="file" accept=".bcf,.bcfzip,.zip" hidden />
+          </label>
           <label class="btn btn-primary">
             Открыть IFC
             <input id="file-input" type="file" accept=".ifc,.zip" multiple hidden />
@@ -108,6 +112,22 @@
           <aside id="trm-list" class="trm-list"></aside>
           <section id="trm-content" class="trm-content"></section>
           <aside id="trm-analysis" class="trm-analysis" hidden></aside>
+        </div>
+      </div>
+
+      <div id="bcf-overlay" class="trm-overlay" hidden>
+        <header class="trm-topbar">
+          <div class="trm-head">
+            <span class="trm-badge">BCF</span>
+            <span id="bcf-title" class="trm-title"></span>
+          </div>
+          <div class="trm-actions">
+            <button id="bcf-close" class="btn" type="button">← К модели</button>
+          </div>
+        </header>
+        <div class="trm-body">
+          <aside id="bcf-list" class="trm-list"></aside>
+          <section id="bcf-content" class="trm-content bcf-content"></section>
         </div>
       </div>
     </div>

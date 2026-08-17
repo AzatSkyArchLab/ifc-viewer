@@ -4,9 +4,12 @@ import { IfcParser } from "./core/ifc-parser.ts";
 import { modelOfKey } from "./core/types.ts";
 import type { IfcStorey } from "./core/types.ts";
 import { Viewer } from "./viewer/viewer.ts";
+import type { BcfSceneCamera, BcfSceneClip } from "./viewer/viewer.ts";
 import { ElementList } from "./ui/element-list.ts";
 import { PropertiesPanel } from "./ui/properties-panel.ts";
 import { TrmView } from "./ui/trm-view.ts";
+import { BcfView } from "./ui/bcf-view.ts";
+import type { BcfViewpoint } from "./core/bcf.ts";
 import { ChecksPanel, type CheckFinding } from "./ui/checks-panel.ts";
 import { fetchCoveringOffsets } from "./core/checks-api.ts";
 import { ModelTree } from "./ui/model-tree.ts";
@@ -56,6 +59,13 @@ const trm = new TrmView(
   byId<HTMLButtonElement>("trm-analyze"),
   byId("trm-analysis"),
 );
+const bcf = new BcfView(
+  byId("bcf-overlay"),
+  byId("bcf-title"),
+  byId("bcf-list"),
+  byId("bcf-content"),
+  byId("bcf-close"),
+);
 const checks = new ChecksPanel(
   byId<HTMLButtonElement>("chk-run"),
   byId("chk-result"),
@@ -64,6 +74,7 @@ const checks = new ChecksPanel(
 const statusEl = byId("status");
 const fileInput = byId<HTMLInputElement>("file-input");
 const trmInput = byId<HTMLInputElement>("trm-input");
+const bcfInput = byId<HTMLInputElement>("bcf-input");
 const filterInput = byId<HTMLInputElement>("filter");
 const btnView = byId<HTMLButtonElement>("btn-view");
 const btnIsolate = byId<HTMLButtonElement>("btn-isolate");
@@ -508,6 +519,79 @@ async function openTrm(file: File): Promise<void> {
   }
 }
 
+async function openBcf(file: File): Promise<void> {
+  setStatus(`Чтение BCF ${file.name}…`);
+  try {
+    bcf.open(new Uint8Array(await file.arrayBuffer()));
+    setStatus(`BCF: ${file.name}`);
+  } catch (err) {
+    console.error(err);
+    setStatus(`Ошибка чтения BCF: ${(err as Error).message}`);
+  }
+}
+
+/**
+ * A BCF direction/up vector (IFC world, Z-up) into scene axes — the same swap
+ * the geometry uses, (x, y, z) → (x, z, −y), but WITHOUT the recentring offset:
+ * it is a direction, not a position.
+ */
+function sceneVec(v: [number, number, number]): BcfSceneCamera["direction"] {
+  return { x: v[0], y: v[2], z: -v[1] };
+}
+
+/** Maps a BCF camera (IFC world) into scene space for the viewer. */
+function toSceneCamera(cam: BcfViewpoint["camera"]): BcfSceneCamera | null {
+  if (!cam) return null;
+  return {
+    position: parser.toScenePoint(cam.position),
+    direction: sceneVec(cam.direction),
+    up: sceneVec(cam.up),
+    fovDeg: cam.perspective ? cam.fov : null,
+  };
+}
+
+/** Maps a BCF clipping plane (IFC world) into scene space for the viewer. */
+function toSceneClip(cp: BcfViewpoint["clippingPlanes"][number]): BcfSceneClip {
+  return {
+    normal: sceneVec(cp.direction),
+    point: parser.toScenePoint(cp.location),
+  };
+}
+
+/** Composite scene keys for a set of IfcGuids, across all open models. */
+async function keysForGuids(guids: string[]): Promise<number[]> {
+  const wanted = new Set(guids);
+  const elements = await parser.getElements();
+  return elements
+    .filter((e) => e.globalId && wanted.has(e.globalId))
+    .map((e) => e.key);
+}
+
+/**
+ * Acts on a BCF selection. Highlights the referenced elements (red) and, when a
+ * specific viewpoint was clicked, restores its camera and section cuts as well —
+ * the saved camera overrides the highlight's default framing so the model is
+ * shown from the exact angle the author saw.
+ */
+async function applyBcfSelection(
+  guids: string[],
+  vp?: BcfViewpoint,
+): Promise<void> {
+  const keys = guids.length ? await keysForGuids(guids) : [];
+  bcf.close();
+
+  if (keys.length) focusElements(keys, false, 0xff3b30);
+
+  const camera = vp ? toSceneCamera(vp.camera) : null;
+  const clips = vp ? vp.clippingPlanes.map(toSceneClip) : [];
+  if (camera || clips.length) viewer.applyViewpoint(camera, clips);
+
+  if (keys.length) setStatus(`Выделено элементов по BCF: ${keys.length}`);
+  else if (camera) setStatus("Переход к точке обзора BCF");
+  else if (clips.length) setStatus("Применён разрез точки обзора BCF");
+  else setStatus("Элементы замечания не найдены в загруженной модели");
+}
+
 /** A web-ifc WASM abort — the module is dead and must be rebuilt to recover. */
 function isAbort(err: unknown): boolean {
   return /abort/i.test((err as Error)?.message ?? "");
@@ -756,11 +840,14 @@ function openArchive(archives: File[]): void {
   );
 }
 
-/** Routes a dropped/selected set: .ifc → visualise; .zip → checks-only. */
+/** Routes a dropped/selected set: .ifc → visualise; .bcf(zip) → issues;
+ *  .zip → checks-only; anything else → TRM. */
 function openDropped(files: File[]): void {
   const ifc = files.filter((f) => /\.ifc$/i.test(f.name));
+  const bcfz = files.filter((f) => /\.bcf(zip)?$/i.test(f.name));
   const zip = files.filter((f) => /\.zip$/i.test(f.name));
   if (ifc.length) void openFiles(ifc);
+  else if (bcfz.length) void openBcf(bcfz[0]);
   else if (zip.length) openArchive(zip);
   else if (files[0]) void openTrm(files[0]);
 }
@@ -783,6 +870,9 @@ viewer.setSelectHandler((key, additive) => select(key, additive));
 // Section panel → clipping planes. The panel owns the config; the viewer just
 // (re)builds the plane list on every change.
 sections.setChangeHandler((cfg) => viewer.setSections(cfg));
+
+// BCF viewpoint → highlight its elements and restore its camera / section cuts.
+bcf.setSelectHandler((guids, vp) => void applyBcfSelection(guids, vp));
 
 checks.setModelsGetter(() => loadedModels);
 viewer.setMarkerHandler((pair) => openClashPopup(pair));
@@ -864,6 +954,12 @@ trmInput.addEventListener("change", () => {
   const file = trmInput.files?.[0];
   if (file) void openTrm(file);
   trmInput.value = "";
+});
+
+bcfInput.addEventListener("change", () => {
+  const file = bcfInput.files?.[0];
+  if (file) void openBcf(file);
+  bcfInput.value = "";
 });
 
 // Drag & drop: several .ifc → merged models; a .zip → checks-only;
