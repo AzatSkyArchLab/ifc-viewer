@@ -11,3 +11,7 @@ public/web-ifc.wasm
 
 # runtime backend config — copy config.example.json → config.json on deploy
 public/config.json
+
+# local sample models used for manual testing — never published
+public/*_test.ifc
+public/*.bcfzip

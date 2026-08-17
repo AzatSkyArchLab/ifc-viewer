@@ -8,6 +8,10 @@ opened `.ifc` to a checks API and visualises the returned findings on the model.
 The set of checks is **not hard-coded** — the viewer renders whatever the API
 returns, so adding a check on the backend surfaces it here with no frontend change.
 
+**Live demo:** <https://azatskyarchlab.github.io/ifc-viewer/> — open your own
+`.ifc` / `.bcf` right in the browser (parsing is client-side). The checks panel
+needs a backend, so it is inactive on the static demo.
+
 ## UI
 
 - **Left, top:** «Проверить модель» → runs the backend checks; each returned check
@@ -19,7 +23,9 @@ returns, so adding a check on the backend surfaces it here with no frontend chan
 - **Left, bottom:** full attributes + property/quantity sets of the selection.
 - **Right:** 3D model — orbit, click to pick, Shift+click to multi-select.
 - **Toolbar:** isolate / hide selection / show all, Open IFC (or drag-and-drop
-  one or more `.ifc` files), Open TRM.
+  one or more `.ifc` files), Open TRM, Open BCF.
+- **Sections:** plan and elevation cut planes (per-floor plan cut and a rotating
+  vertical cut) with a filled poché cross-section.
 
 ### TRM drawings
 
@@ -28,6 +34,14 @@ overlay listing the container's documents; selecting one previews it (PDF
 drawings render via `pdf.js`, images inline). When a loaded model matches a TRM
 drawing by filename, a «Вид модели (TRM)» button opens it directly. Parsing is
 client-side (`fflate` + `pdfjs-dist`) and independent of the backend.
+
+### BCF issues
+
+«Открыть BCF» (or drag-and-drop a `.bcf` / `.bcfzip`) opens a full-screen overlay
+listing the archive's topics, comments and viewpoint snapshots. Clicking a
+viewpoint restores its saved view — the camera pose and section cuts — and
+highlights the referenced elements in the model by `IfcGuid`. Parsing is
+client-side (`fflate`) and independent of the backend.
 
 ## Backend contract
 
@@ -94,6 +108,9 @@ npm run build        # type-check + bundle → dist/
 S3, or the API itself). After deploy, set the backend URL by editing
 `dist/config.json` (no rebuild). To embed inside another page, host `dist/` and,
 if needed, inject `window.__IFC_VIEWER_CONFIG__` before the bundle loads.
+
+This repo also ships a GitHub Pages workflow (`.github/workflows/deploy.yml`):
+every push to `main` builds and publishes `dist/` to Pages.
 
 ## Structure
 
