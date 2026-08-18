@@ -333,11 +333,14 @@ export class Viewer {
   }
 
   private addLights(): void {
-    this.scene.add(new THREE.HemisphereLight(0xffffff, 0xbfc3c9, 1.1));
-    const dir = new THREE.DirectionalLight(0xffffff, 1.4);
+    // Calmer sum than before (was 1.1+1.4+0.5=3.0, which blew the white solid
+    // material out to a flat wash); ~1.95 keeps the form readable and gives edge
+    // shading something to sit on.
+    this.scene.add(new THREE.HemisphereLight(0xffffff, 0xbfc3c9, 0.8));
+    const dir = new THREE.DirectionalLight(0xffffff, 0.7);
     dir.position.set(50, 80, 30);
     this.scene.add(dir);
-    this.scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+    this.scene.add(new THREE.AmbientLight(0xffffff, 0.45));
   }
 
   private addGround(): void {
@@ -401,6 +404,10 @@ export class Viewer {
     // Construct only the batches we need (a model may be all-solid or all-space).
     if (solidCount > 0) {
       this.solids = new THREE.BatchedMesh(solidCount, solidVerts, solidIdx, this.solidMat);
+      // Opaque: depth test resolves order, so skip BatchedMesh's per-frame
+      // O(n log n) instance sort — it otherwise runs on every render(), and the
+      // section path renders solids 6-8× per frame.
+      this.solids.sortObjects = false;
       this.ghostSolid = new THREE.BatchedMesh(solidCount, solidVerts, solidIdx, this.ghostMat);
       this.modelGroup.add(this.solids, this.ghostSolid);
       this.solidKey = new Array(solidCount);
@@ -772,6 +779,9 @@ export class Viewer {
    * the ghost batches (which are never raycast → structurally non-pickable).
    */
   private applyMaterials(): void {
+    let transShown = 0;
+    let ghostSolidOn = 0;
+    let ghostTransOn = 0;
     for (const [key, refs] of this.byKey) {
       const isHidden = this.lastHidden.has(key);
       const isGhost = !isHidden && this.lastGhost.has(key);
@@ -785,6 +795,7 @@ export class Viewer {
           this.solids!.setVisibleAt(ref.id, shown);
           this.ghostSolid!.setVisibleAt(ref.id, isGhost);
           this.setSolidColor(ref.id, isSel ? tint : this.solidBase[ref.id]);
+          if (isGhost) ghostSolidOn++;
         } else {
           this.transparent!.setVisibleAt(ref.id, shown);
           this.ghostTrans!.setVisibleAt(ref.id, isGhost);
@@ -795,12 +806,20 @@ export class Viewer {
           } else {
             this.setTransColor(ref.id, this.transBase[ref.id]);
           }
+          if (shown) transShown++;
+          if (isGhost) ghostTransOn++;
         }
       }
       // Outlines follow the space's visibility (stay shown while ghosted).
       const lines = this.spaceOutlines.get(key);
       if (lines) for (const l of lines) l.visible = !isHidden;
     }
+    // Skip whole batches that draw nothing this frame — their per-instance
+    // onBeforeRender loop (frustum test on every instance) otherwise runs even
+    // at multiDrawCount 0. Typical model: ghost empty + IfcSpace layer-hidden.
+    if (this.transparent) this.transparent.visible = transShown > 0;
+    if (this.ghostSolid) this.ghostSolid.visible = ghostSolidOn > 0;
+    if (this.ghostTrans) this.ghostTrans.visible = ghostTransOn > 0;
     this.requestRender();
   }
 
