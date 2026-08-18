@@ -122,6 +122,13 @@ export class Viewer {
   /** The sun that casts the contact shadow, and the ground plane that catches it. */
   private sun!: THREE.DirectionalLight;
   private shadowCatcher!: THREE.Mesh;
+  /** Fill lights, kept in fields so setLighting can rebalance them. */
+  private hemi!: THREE.HemisphereLight;
+  private ambient!: THREE.AmbientLight;
+  /** Contact shadow off until enabled from the menu. */
+  private shadowsOn = false;
+  /** Sun direction (unit, model→sun), driven by setSunDirection; default SE, high. */
+  private sunDir = dirFromAzAlt(135, 55);
 
   private raycaster = new THREE.Raycaster();
   private pointer = new THREE.Vector2();
@@ -242,8 +249,8 @@ export class Viewer {
   private _bufSize = new THREE.Vector2();
 
   /** Screen-space element edges: a dark contour on silhouettes and creases, for
-   *  a drawing-like read. Off-screen normal+depth prepass → edge-detect composite. */
-  private edgesOn = true;
+   *  a drawing-like read. Off by default — enabled from the Отображение menu. */
+  private edgesOn = false;
   private edgeRT: THREE.WebGLRenderTarget | null = null;
   private edgeNormalMat = new THREE.MeshNormalMaterial();
   private edgeMat: THREE.ShaderMaterial | null = null;
@@ -359,20 +366,18 @@ export class Viewer {
   }
 
   private addLights(): void {
-    // Calmer sum than before (was 1.1+1.4+0.5=3.0, which blew the white solid
-    // material out to a flat wash); ~1.95 keeps the form readable and gives edge
-    // shading something to sit on.
-    this.scene.add(new THREE.HemisphereLight(0xffffff, 0xbfc3c9, 0.8));
-    const dir = new THREE.DirectionalLight(0xffffff, 0.7);
-    dir.position.set(50, 80, 30);
+    // Default is the "flat" set: bright fill + a faint sun, so the model reads
+    // evenly with no strong cast on the material. setLighting(true) swaps to a
+    // directional set (strong sun, dimmed fill) for sculpted light and shadow.
+    this.hemi = new THREE.HemisphereLight(0xffffff, 0xbfc3c9, 0.85);
+    this.ambient = new THREE.AmbientLight(0xffffff, 0.45);
+    const dir = new THREE.DirectionalLight(0xffffff, 0.15);
     dir.castShadow = true;
     dir.shadow.mapSize.set(2048, 2048);
     dir.shadow.bias = -0.0005;
     dir.shadow.normalBias = 0.6; // pushes samples off the surface — kills acne on big flat slabs
     this.sun = dir;
-    this.scene.add(dir);
-    this.scene.add(dir.target); // target lives in the scene so updateShadow can aim it
-    this.scene.add(new THREE.AmbientLight(0xffffff, 0.45));
+    this.scene.add(this.hemi, dir, dir.target, this.ambient);
   }
 
   private addGround(): void {
@@ -423,7 +428,9 @@ export class Viewer {
    */
   private updateShadow(): void {
     const b = this.getModelBounds();
-    const on = !!b && !this.capsOn;
+    // Shadow needs an explicit opt-in and no active section (its multi-pass cap
+    // render would fight the shadow pass, and a cut model's shadow misleads).
+    const on = !!b && !this.capsOn && this.shadowsOn;
     this.sun.castShadow = on;
     this.shadowCatcher.visible = on;
     if (!b) return;
@@ -435,15 +442,17 @@ export class Viewer {
     const sz = b.max.z - b.min.z;
     const radius = Math.max(sx, sy, sz);
 
+    // Aim the sun from `sunDir` at all times — it also drives the directional
+    // lighting, which must follow the sun sliders even with the shadow off.
+    const center = new THREE.Vector3(cx, cy, cz);
+    this.sun.target.position.copy(center);
+    this.sun.position.copy(center).addScaledVector(this.sunDir, radius * 2.5);
+
     // Catcher: flat plane a hair below the model foot (avoids z-fighting the slab).
     this.shadowCatcher.position.set(cx, b.min.y - radius * 0.001, cz);
     this.shadowCatcher.scale.set(sx * 2.5 + 1, sz * 2.5 + 1, 1);
 
     if (on) {
-      const dirVec = new THREE.Vector3(50, 80, 30).normalize();
-      const center = new THREE.Vector3(cx, cy, cz);
-      this.sun.target.position.copy(center);
-      this.sun.position.copy(center).addScaledVector(dirVec, radius * 2.5);
       const cam = this.sun.shadow.camera;
       cam.left = -radius * 1.2;
       cam.right = radius * 1.2;
@@ -455,6 +464,34 @@ export class Viewer {
       this.renderer.shadowMap.needsUpdate = true;
     }
     this.requestRender();
+  }
+
+  // ── Display menu API (Отображение → Графика) ─────────────────────────────────
+
+  /** Toggle the screen-space element contours (off by default). */
+  setEdges(on: boolean): void {
+    this.edgesOn = on;
+    this.requestRender();
+  }
+
+  /** Flat even fill (off) vs a sculpted directional sun with dimmed fill (on). */
+  setLighting(on: boolean): void {
+    this.sun.intensity = on ? 1.15 : 0.15;
+    this.hemi.intensity = on ? 0.45 : 0.85;
+    this.ambient.intensity = on ? 0.25 : 0.45;
+    this.requestRender();
+  }
+
+  /** Enable/disable the contact shadow (updateShadow gates on shadowsOn + capsOn). */
+  setShadows(on: boolean): void {
+    this.shadowsOn = on;
+    this.updateShadow();
+  }
+
+  /** Move the sun by azimuth (0..360°) and altitude (0..90°); light + shadow follow. */
+  setSunDirection(azimuthDeg: number, altitudeDeg: number): void {
+    this.sunDir = dirFromAzAlt(azimuthDeg, altitudeDeg);
+    this.updateShadow();
   }
 
   /**
@@ -1787,6 +1824,18 @@ export class Viewer {
       false,
     );
   }
+}
+
+/** Unit sun direction (model→sun) from azimuth (° around Y, 0° = +Z) and
+ *  altitude (° above the ground). Scene is Y-up. */
+function dirFromAzAlt(azimuthDeg: number, altitudeDeg: number): THREE.Vector3 {
+  const az = (azimuthDeg * Math.PI) / 180;
+  const al = (altitudeDeg * Math.PI) / 180;
+  return new THREE.Vector3(
+    Math.cos(al) * Math.sin(az),
+    Math.sin(al),
+    Math.cos(al) * Math.cos(az),
+  ).normalize();
 }
 
 /** A position+index-only copy for a ghost twin (no normals — unlit material). */

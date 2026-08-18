@@ -10,6 +10,7 @@ import { PropertiesPanel } from "./ui/properties-panel.ts";
 import { TrmView } from "./ui/trm-view.ts";
 import { BcfView } from "./ui/bcf-view.ts";
 import type { BcfViewpoint } from "./core/bcf.ts";
+import { DisplayMenu } from "./ui/display-menu.ts";
 import { ChecksPanel, type CheckFinding } from "./ui/checks-panel.ts";
 import { fetchCoveringOffsets } from "./core/checks-api.ts";
 import { ModelTree } from "./ui/model-tree.ts";
@@ -50,6 +51,7 @@ const list = new ElementList(byId("element-list"));
 const props = new PropertiesPanel(byId("properties"));
 const tree = new ModelTree(byId("model-tree"));
 const sections = new SectionPanel(byId("section-panel"));
+const display = new DisplayMenu(byId("display-menu"));
 const trm = new TrmView(
   byId("trm-overlay"),
   byId("trm-title"),
@@ -870,6 +872,15 @@ viewer.setSelectHandler((key, additive) => select(key, additive));
 // Section panel → clipping planes. The panel owns the config; the viewer just
 // (re)builds the plane list on every change.
 sections.setChangeHandler((cfg) => viewer.setSections(cfg));
+
+// Display menu → optional graphics (edges / lighting / shadow / sun). The viewer
+// setters are idempotent, so pushing the whole config on any change is cheap.
+display.setChangeHandler((cfg) => {
+  viewer.setEdges(cfg.edges);
+  viewer.setLighting(cfg.lighting);
+  viewer.setShadows(cfg.shadows);
+  viewer.setSunDirection(cfg.sunAzimuthDeg, cfg.sunAltitudeDeg);
+});
 
 // BCF viewpoint → highlight its elements and restore its camera / section cuts.
 bcf.setSelectHandler((guids, vp) => void applyBcfSelection(guids, vp));
