@@ -1028,9 +1028,11 @@ export class Viewer {
       const s = cfg.vertical.flip ? -1 : 1;
       const nx = Math.cos(a) * s;
       const nz = Math.sin(a) * s;
-      // planePoint = centre + offset·normal (normal is unit); with flip folded
-      // into the normal the offset slides along the shown side either way.
-      const constant = -(nx * cx + nz * cz) - cfg.vertical.offset * s;
+      // Plane through centre + offset·normal — exactly where the widget rectangle
+      // sits (the normal already carries the flip), so the cut and the visible
+      // plane move together in either flip state. (Earlier this had an extra ·s
+      // that made the offset run opposite the widget once flipped.)
+      const constant = -(nx * cx + nz * cz) - cfg.vertical.offset;
       planes.push(new THREE.Plane(new THREE.Vector3(nx, 0, nz), constant));
     }
 
