@@ -53,6 +53,16 @@ const SECTION_OUTLINE_COLOR = 0x15181c;
 const SECTION_OUTLINE_PX = 1.4;
 /** Light orange for the translucent cut-plane indicator + its projection arrows. */
 const SECTION_PLANE_COLOR = 0xff9d3c;
+
+// ── Screen-space element edges (the "drawing" look) ──────────────────────────────
+/** Layer carrying the opaque solids for the edge normal-prepass, in isolation. */
+const EDGE_LAYER = 3;
+/** Dark graphite for the element contour lines. */
+const EDGE_COLOR = 0x2b2f36;
+/** Normal dot below this between neighbours marks a crease edge. */
+const EDGE_NORMAL_THRESHOLD = 0.7;
+/** Relative linear-depth jump between neighbours marking a silhouette edge. */
+const EDGE_DEPTH_THRESHOLD = 0.02;
 /** Extra camera layer carrying only the opaque solids, for the stencil pass. */
 const STENCIL_LAYER = 1;
 /** Camera layer carrying only the cap quads, so they render in isolation. */
@@ -227,6 +237,14 @@ export class Viewer {
   private outlineMat: THREE.ShaderMaterial | null = null;
   private readonly orthoCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
   private _bufSize = new THREE.Vector2();
+
+  /** Screen-space element edges: a dark contour on silhouettes and creases, for
+   *  a drawing-like read. Off-screen normal+depth prepass → edge-detect composite. */
+  private edgesOn = true;
+  private edgeRT: THREE.WebGLRenderTarget | null = null;
+  private edgeNormalMat = new THREE.MeshNormalMaterial();
+  private edgeMat: THREE.ShaderMaterial | null = null;
+  private edgeScene: THREE.Scene | null = null;
 
   /** On-demand rendering: only draw a frame when the scene actually changed. */
   private needsRender = true;
@@ -408,6 +426,8 @@ export class Viewer {
       // O(n log n) instance sort — it otherwise runs on every render(), and the
       // section path renders solids 6-8× per frame.
       this.solids.sortObjects = false;
+      // Also drawn on its own layer for the edge normal-prepass.
+      this.solids.layers.enable(EDGE_LAYER);
       this.ghostSolid = new THREE.BatchedMesh(solidCount, solidVerts, solidIdx, this.ghostMat);
       this.modelGroup.add(this.solids, this.ghostSolid);
       this.solidKey = new Array(solidCount);
@@ -1412,6 +1432,122 @@ export class Viewer {
     this.outlineScene.add(quad);
   }
 
+  /**
+   * Draws dark element contours over the current frame. A prepass renders the
+   * opaque solids' view-space normals (+ depth) off-screen, honouring the active
+   * clipping planes; a full-screen pass then marks a pixel as an edge where a
+   * neighbour is background (silhouette), the normal turns sharply (crease), or
+   * the depth jumps (one solid in front of another), and composites the line on
+   * top. Cost is O(pixels), so it holds up on large models. Ghost/space/ground
+   * are off EDGE_LAYER and never contribute edges.
+   */
+  private renderEdges(): void {
+    if (!this.edgesOn || !this.solids) return;
+    const r = this.renderer;
+    r.getDrawingBufferSize(this._bufSize);
+    this.ensureEdges();
+
+    // Prepass — solids only, as view normals, into edgeRT (+ its depth texture).
+    this.edgeNormalMat.clippingPlanes = this.solidMat.clippingPlanes;
+    const prevBg = this.scene.background;
+    const prevOverride = this.scene.overrideMaterial;
+    this.scene.background = null;
+    this.scene.overrideMaterial = this.edgeNormalMat;
+    this.camera.layers.set(EDGE_LAYER);
+    r.setRenderTarget(this.edgeRT);
+    r.autoClear = true;
+    r.setClearColor(0x000000, 0); // alpha 0 → background sentinel for silhouettes
+    r.clear(true, true, false);
+    r.render(this.scene, this.camera);
+    r.setRenderTarget(null);
+    this.scene.background = prevBg;
+    this.scene.overrideMaterial = prevOverride;
+    this.camera.layers.set(0);
+
+    // Composite — detect edges from the normal+depth buffer and draw the line.
+    const mat = this.edgeMat!;
+    mat.uniforms.uNormal.value = this.edgeRT!.texture;
+    mat.uniforms.uDepth.value = this.edgeRT!.depthTexture;
+    mat.uniforms.uTexel.value.set(1 / this._bufSize.x, 1 / this._bufSize.y);
+    mat.uniforms.uNear.value = this.camera.near;
+    mat.uniforms.uFar.value = this.camera.far;
+    r.autoClear = false;
+    r.render(this.edgeScene!, this.orthoCam);
+    r.autoClear = true;
+  }
+
+  /** Lazily builds (and resizes) the edge normal+depth target and its quad. */
+  private ensureEdges(): void {
+    const w = Math.max(1, Math.floor(this._bufSize.x));
+    const h = Math.max(1, Math.floor(this._bufSize.y));
+    if (!this.edgeRT) {
+      this.edgeRT = new THREE.WebGLRenderTarget(w, h, {
+        minFilter: THREE.NearestFilter,
+        magFilter: THREE.NearestFilter,
+        depthBuffer: true,
+      });
+      this.edgeRT.depthTexture = new THREE.DepthTexture(w, h);
+      this.edgeRT.depthTexture.type = THREE.UnsignedIntType;
+    } else if (this.edgeRT.width !== w || this.edgeRT.height !== h) {
+      this.edgeRT.setSize(w, h);
+    }
+    if (this.edgeScene) return;
+    this.edgeMat = new THREE.ShaderMaterial({
+      uniforms: {
+        uNormal: { value: null },
+        uDepth: { value: null },
+        uTexel: { value: new THREE.Vector2() },
+        uColor: { value: new THREE.Color(EDGE_COLOR) },
+        uNear: { value: 0.1 },
+        uFar: { value: 1000 },
+        uNormalT: { value: EDGE_NORMAL_THRESHOLD },
+        uDepthT: { value: EDGE_DEPTH_THRESHOLD },
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`,
+      fragmentShader: `
+        uniform sampler2D uNormal;
+        uniform sampler2D uDepth;
+        uniform vec2 uTexel;
+        uniform vec3 uColor;
+        uniform float uNear, uFar, uNormalT, uDepthT;
+        varying vec2 vUv;
+        float linz(float d) {
+          float z = d * 2.0 - 1.0;
+          return (2.0 * uNear * uFar) / (uFar + uNear - z * (uFar - uNear));
+        }
+        void main() {
+          vec4 c = texture2D(uNormal, vUv);
+          if (c.a < 0.5) discard;                 // background pixel — no edge here
+          vec3 nc = normalize(c.rgb * 2.0 - 1.0);
+          float dc = linz(texture2D(uDepth, vUv).r);
+          float edge = 0.0;
+          vec2 offs[4];
+          offs[0] = vec2(uTexel.x, 0.0);  offs[1] = vec2(-uTexel.x, 0.0);
+          offs[2] = vec2(0.0, uTexel.y);  offs[3] = vec2(0.0, -uTexel.y);
+          for (int i = 0; i < 4; i++) {
+            vec2 uv = vUv + offs[i];
+            vec4 s = texture2D(uNormal, uv);
+            if (s.a < 0.5) { edge = 1.0; continue; }               // silhouette vs background
+            vec3 ns = normalize(s.rgb * 2.0 - 1.0);
+            if (dot(nc, ns) < uNormalT) edge = 1.0;                // crease
+            float ds = linz(texture2D(uDepth, uv).r);
+            if (abs(ds - dc) > uDepthT * dc) edge = 1.0;           // depth step
+          }
+          if (edge < 0.5) discard;
+          gl_FragColor = vec4(uColor, 1.0);
+        }`,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+    });
+    const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.edgeMat);
+    quad.frustumCulled = false;
+    this.edgeScene = new THREE.Scene();
+    this.edgeScene.add(quad);
+  }
+
   // ── Internal ─────────────────────────────────────────────────────────────────
 
   private onPointerDown = (event: PointerEvent): void => {
@@ -1563,6 +1699,7 @@ export class Viewer {
     this.applyRenderQuality(this.needsRender);
     if (this.capsOn && this.solids) this.renderWithCaps();
     else this.renderer.render(this.scene, this.camera);
+    this.renderEdges(); // element contours over the base frame (both paths)
     this.updateStats();
   };
 
