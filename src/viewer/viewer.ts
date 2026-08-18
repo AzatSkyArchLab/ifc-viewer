@@ -119,6 +119,9 @@ export class Viewer {
   private keyColors = new Map<number, THREE.Color>();
   /** Ground grid — dropped to the model's underside after each load. */
   private grid!: THREE.GridHelper;
+  /** The sun that casts the contact shadow, and the ground plane that catches it. */
+  private sun!: THREE.DirectionalLight;
+  private shadowCatcher!: THREE.Mesh;
 
   private raycaster = new THREE.Raycaster();
   private pointer = new THREE.Vector2();
@@ -273,6 +276,11 @@ export class Viewer {
     // Section planes are per-material (material.clippingPlanes), so local
     // clipping has to be enabled once for the whole renderer.
     this.renderer.localClippingEnabled = true;
+    // Soft contact shadow. The model + light are static, so the map is rebuilt
+    // on demand (load / section change), not per frame; see updateShadow.
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.autoUpdate = false;
     container.appendChild(this.renderer.domElement);
 
     this.scene = new THREE.Scene();
@@ -357,7 +365,13 @@ export class Viewer {
     this.scene.add(new THREE.HemisphereLight(0xffffff, 0xbfc3c9, 0.8));
     const dir = new THREE.DirectionalLight(0xffffff, 0.7);
     dir.position.set(50, 80, 30);
+    dir.castShadow = true;
+    dir.shadow.mapSize.set(2048, 2048);
+    dir.shadow.bias = -0.0005;
+    dir.shadow.normalBias = 0.6; // pushes samples off the surface — kills acne on big flat slabs
+    this.sun = dir;
     this.scene.add(dir);
+    this.scene.add(dir.target); // target lives in the scene so updateShadow can aim it
     this.scene.add(new THREE.AmbientLight(0xffffff, 0.45));
   }
 
@@ -366,6 +380,18 @@ export class Viewer {
     (this.grid.material as THREE.Material).opacity = 0.6;
     (this.grid.material as THREE.Material).transparent = true;
     this.scene.add(this.grid);
+
+    // Invisible plane that shows only the shadow (ShadowMaterial), sat at the
+    // model's foot and sized in updateShadow. Not raycast.
+    this.shadowCatcher = new THREE.Mesh(
+      new THREE.PlaneGeometry(1, 1),
+      new THREE.ShadowMaterial({ opacity: 0.16, transparent: true, depthWrite: false }),
+    );
+    this.shadowCatcher.rotation.x = -Math.PI / 2; // lie flat, facing up
+    this.shadowCatcher.receiveShadow = true;
+    this.shadowCatcher.visible = false;
+    this.shadowCatcher.raycast = () => {};
+    this.scene.add(this.shadowCatcher);
   }
 
   /** Whole-model bounds from the batches (all instances active at load). */
@@ -386,6 +412,49 @@ export class Viewer {
   private groundToModel(): void {
     const box = this.modelBounds(this._box);
     this.grid.position.y = box.isEmpty() ? 0 : box.min.y;
+    this.updateShadow();
+  }
+
+  /**
+   * Aims the sun at the model and sizes its shadow frustum + the catcher plane
+   * to the model bounds, then rebuilds the (static) shadow map once. Switched off
+   * while a section is active — its multi-pass cap render would fight the shadow
+   * pass, and a cut model's shadow is misleading anyway.
+   */
+  private updateShadow(): void {
+    const b = this.getModelBounds();
+    const on = !!b && !this.capsOn;
+    this.sun.castShadow = on;
+    this.shadowCatcher.visible = on;
+    if (!b) return;
+    const cx = (b.min.x + b.max.x) / 2;
+    const cz = (b.min.z + b.max.z) / 2;
+    const cy = (b.min.y + b.max.y) / 2;
+    const sx = b.max.x - b.min.x;
+    const sy = b.max.y - b.min.y;
+    const sz = b.max.z - b.min.z;
+    const radius = Math.max(sx, sy, sz);
+
+    // Catcher: flat plane a hair below the model foot (avoids z-fighting the slab).
+    this.shadowCatcher.position.set(cx, b.min.y - radius * 0.001, cz);
+    this.shadowCatcher.scale.set(sx * 2.5 + 1, sz * 2.5 + 1, 1);
+
+    if (on) {
+      const dirVec = new THREE.Vector3(50, 80, 30).normalize();
+      const center = new THREE.Vector3(cx, cy, cz);
+      this.sun.target.position.copy(center);
+      this.sun.position.copy(center).addScaledVector(dirVec, radius * 2.5);
+      const cam = this.sun.shadow.camera;
+      cam.left = -radius * 1.2;
+      cam.right = radius * 1.2;
+      cam.top = radius * 1.2;
+      cam.bottom = -radius * 1.2;
+      cam.near = 0.1;
+      cam.far = radius * 6;
+      cam.updateProjectionMatrix();
+      this.renderer.shadowMap.needsUpdate = true;
+    }
+    this.requestRender();
   }
 
   /**
@@ -428,6 +497,7 @@ export class Viewer {
       this.solids.sortObjects = false;
       // Also drawn on its own layer for the edge normal-prepass.
       this.solids.layers.enable(EDGE_LAYER);
+      this.solids.castShadow = true; // the opaque structure casts the contact shadow
       this.ghostSolid = new THREE.BatchedMesh(solidCount, solidVerts, solidIdx, this.ghostMat);
       this.modelGroup.add(this.solids, this.ghostSolid);
       this.solidKey = new Array(solidCount);
@@ -1115,6 +1185,7 @@ export class Viewer {
     }
     // Rebuild the stencil caps for these planes (fills the cut cross-section).
     this.buildCaps(planes);
+    this.updateShadow(); // caps on → shadow off (and back), per capsOn
     this.requestRender();
   }
 
