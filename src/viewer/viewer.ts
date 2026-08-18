@@ -51,6 +51,8 @@ const SECTION_FILL_COLOR = 0x8a8f98;
 const SECTION_OUTLINE_COLOR = 0x15181c;
 /** Cut-outline half-thickness, in device pixels (screen-space edge kernel). */
 const SECTION_OUTLINE_PX = 1.4;
+/** Light orange for the translucent cut-plane indicator + its projection arrows. */
+const SECTION_PLANE_COLOR = 0xff9d3c;
 /** Extra camera layer carrying only the opaque solids, for the stencil pass. */
 const STENCIL_LAYER = 1;
 /** Camera layer carrying only the cap quads, so they render in isolation. */
@@ -194,6 +196,29 @@ export class Viewer {
   private capGroup = new THREE.Group();
   /** True once caps are built for the active planes and there is solid geometry. */
   private capsOn = false;
+
+  /** The translucent cut-plane indicators + their corner projection arrows. Not
+   *  clipped (own materials) and not raycast — a pure visual guide. */
+  private sectionWidgets = new THREE.Group();
+  private sectionPlaneMat = new THREE.MeshBasicMaterial({
+    color: SECTION_PLANE_COLOR,
+    transparent: true,
+    opacity: 0.12,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  private sectionEdgeMat = new THREE.LineBasicMaterial({
+    color: SECTION_PLANE_COLOR,
+    transparent: true,
+    opacity: 0.6,
+    depthWrite: false,
+  });
+  private sectionArrowMat = new THREE.MeshBasicMaterial({
+    color: SECTION_PLANE_COLOR,
+    transparent: true,
+    opacity: 0.65,
+    depthWrite: false,
+  });
   /** Draw the thick cut outline (screen-space edge of the fill silhouette). */
   private outlineOn = true;
   /** Off-screen silhouette of the caps, edge-detected for the outline. */
@@ -239,6 +264,7 @@ export class Viewer {
     // Cap quads live directly under the scene on their own layer, so the model
     // group's clear/visibility logic never touches them.
     this.scene.add(this.capGroup);
+    this.scene.add(this.sectionWidgets);
 
     this.camera = new THREE.PerspectiveCamera(
       60,
@@ -900,6 +926,140 @@ export class Viewer {
     }
 
     this.applyPlanes(planes);
+    this.buildSectionWidgets(cfg);
+  }
+
+  /**
+   * (Re)builds the translucent cut-plane indicators: for each active section a
+   * light-orange rectangle a touch larger than the model, sitting at the cut,
+   * with a projection arrow at each corner pointing the way the plan/section is
+   * viewed (down for a plan, along the kept-side normal for a section). Purely a
+   * visual guide — its own materials, so the section planes never clip it.
+   */
+  private buildSectionWidgets(cfg: SectionConfig): void {
+    this.disposeSectionWidgets();
+    const b = this.getModelBounds();
+    if (!b) return;
+    const cx = (b.min.x + b.max.x) / 2;
+    const cy = (b.min.y + b.max.y) / 2;
+    const cz = (b.min.z + b.max.z) / 2;
+    const sx = b.max.x - b.min.x;
+    const sy = b.max.y - b.min.y;
+    const sz = b.max.z - b.min.z;
+    const pad = 1.08; // a touch larger than the building
+
+    if (cfg.horizontal.on) {
+      const center = new THREE.Vector3(cx, cfg.horizontal.z, cz);
+      const u = new THREE.Vector3(1, 0, 0);
+      const v = new THREE.Vector3(0, 0, 1);
+      // Plan: viewed from above unless flipped to keep the upper part.
+      const proj = new THREE.Vector3(0, cfg.horizontal.flip ? 1 : -1, 0);
+      this.addPlaneWidget(center, u, v, (sx / 2) * pad, (sz / 2) * pad, proj, Math.max(sx, sz));
+    }
+    if (cfg.vertical.on) {
+      const a = (cfg.vertical.angleDeg * Math.PI) / 180;
+      const s = cfg.vertical.flip ? -1 : 1;
+      const nx = Math.cos(a) * s;
+      const nz = Math.sin(a) * s;
+      const center = new THREE.Vector3(
+        cx + nx * cfg.vertical.offset,
+        cy,
+        cz + nz * cfg.vertical.offset,
+      );
+      const u = new THREE.Vector3(0, 1, 0); // vertical
+      const v = new THREE.Vector3(-nz, 0, nx); // in-plane horizontal (⟂ normal)
+      // Width the building actually spans along the cut (its bbox shadow on v),
+      // so the rectangle hugs the model instead of the full footprint diagonal.
+      const halfW = (sx / 2) * Math.abs(nz) + (sz / 2) * Math.abs(nx);
+      const proj = new THREE.Vector3(-nx, 0, -nz); // view toward the kept (+normal) side
+      this.addPlaneWidget(center, u, v, (sy / 2) * pad, halfW * pad, proj, Math.max(sy, halfW * 2));
+    }
+    this.requestRender();
+  }
+
+  /** One cut-plane rectangle (fill + border) with a projection arrow at each of
+   *  its four corners. `u`/`v` are the in-plane axes; the plane normal is u×v. */
+  private addPlaneWidget(
+    center: THREE.Vector3,
+    u: THREE.Vector3,
+    v: THREE.Vector3,
+    halfU: number,
+    halfV: number,
+    proj: THREE.Vector3,
+    modelSpan: number,
+  ): void {
+    const un = u.clone().normalize();
+    const vn = v.clone().normalize();
+    const normal = new THREE.Vector3().crossVectors(un, vn).normalize();
+    const quat = new THREE.Quaternion().setFromRotationMatrix(
+      new THREE.Matrix4().makeBasis(un, vn, normal),
+    );
+
+    const fill = new THREE.Mesh(
+      new THREE.PlaneGeometry(halfU * 2, halfV * 2),
+      this.sectionPlaneMat,
+    );
+    fill.position.copy(center);
+    fill.quaternion.copy(quat);
+    fill.renderOrder = 4;
+    fill.raycast = () => {};
+    this.sectionWidgets.add(fill);
+
+    const border = new THREE.LineSegments(
+      new THREE.EdgesGeometry(fill.geometry),
+      this.sectionEdgeMat,
+    );
+    border.position.copy(center);
+    border.quaternion.copy(quat);
+    border.renderOrder = 5;
+    border.raycast = () => {};
+    this.sectionWidgets.add(border);
+
+    const len = Math.max(modelSpan * 0.06, 0.5);
+    for (const su of [halfU, -halfU]) {
+      for (const sv of [halfV, -halfV]) {
+        const corner = center
+          .clone()
+          .addScaledVector(un, su)
+          .addScaledVector(vn, sv);
+        this.sectionWidgets.add(this.makeArrow(corner, proj, len));
+      }
+    }
+  }
+
+  /** A small translucent arrow (shaft + head) at `origin` pointing along `dir`. */
+  private makeArrow(origin: THREE.Vector3, dir: THREE.Vector3, len: number): THREE.Object3D {
+    const g = new THREE.Group();
+    const shaftLen = len * 0.7;
+    const headLen = len * 0.3;
+    const shaft = new THREE.Mesh(
+      new THREE.CylinderGeometry(len * 0.03, len * 0.03, shaftLen, 6),
+      this.sectionArrowMat,
+    );
+    shaft.position.set(0, shaftLen / 2, 0);
+    const head = new THREE.Mesh(
+      new THREE.ConeGeometry(len * 0.09, headLen, 10),
+      this.sectionArrowMat,
+    );
+    head.position.set(0, shaftLen + headLen / 2, 0);
+    g.add(shaft, head);
+    // Cylinder/Cone point along +Y by default — aim them along dir.
+    g.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
+    g.position.copy(origin);
+    g.renderOrder = 5;
+    g.traverse((o) => (o.raycast = () => {}));
+    return g;
+  }
+
+  /** Frees the current cut-plane widgets (geometry only; materials are shared). */
+  private disposeSectionWidgets(): void {
+    for (const child of this.sectionWidgets.children.slice()) {
+      child.traverse((o) => {
+        const mesh = o as THREE.Mesh;
+        if (mesh.geometry) mesh.geometry.dispose();
+      });
+      this.sectionWidgets.remove(child);
+    }
   }
 
   /**
@@ -931,6 +1091,9 @@ export class Viewer {
   applyViewpoint(camera: BcfSceneCamera | null, clips: BcfSceneClip[]): void {
     if (camera) this.applyCamera(camera);
     this.applyPlanes(clips.map((c) => this.clipPlane(c)));
+    // A viewpoint takes over the section state; drop the panel's plane widget so
+    // a stale orange rectangle from a previous cut does not linger.
+    this.disposeSectionWidgets();
   }
 
   /** Points the camera along a BCF pose (scene space), framing the model depth. */

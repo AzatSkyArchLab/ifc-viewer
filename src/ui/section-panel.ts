@@ -15,8 +15,9 @@ export interface FloorOption {
   z: number;
 }
 
-/** Where a plan cut sits above the chosen slab — a usable architectural cut (m). */
-const PLAN_CUT_HEIGHT = 1.2;
+/** Where a plan cut sits above the chosen slab — the standard architectural cut
+ *  height, ~1.5 m off the storey's zero level (windows/doors are caught). */
+const PLAN_CUT_HEIGHT = 1.5;
 
 /**
  * Sidebar panel driving the two section (cutting) planes. It owns the
